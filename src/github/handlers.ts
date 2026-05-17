@@ -2,12 +2,14 @@ import type { Webhooks } from "@octokit/webhooks";
 
 import {
   findStickyClearanceComment,
+  listChangedFilesBetweenCommits,
   listChangedPullRequestFiles,
   loadOwnershipTree,
   requestPullRequestReviewers,
   resolveGithubIdentities,
   setCommitStatuses,
   upsertStickyClearanceComment,
+  type CommitCompareOctokit,
   type GithubIdentityOctokit,
   type GithubStatusesOctokit,
   type OwnershipTreeOctokit,
@@ -25,6 +27,7 @@ import {
 const pullRequestActions = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
 
 export type GithubWorkflowOctokit = GithubIdentityOctokit &
+  CommitCompareOctokit &
   GithubStatusesOctokit &
   OwnershipTreeOctokit &
   PullRequestFilesOctokit &
@@ -51,15 +54,19 @@ export function registerGithubHandlers(
     const sender = payload.sender?.login;
 
     if (octokit !== undefined && author !== undefined && sender !== undefined) {
-      const input = createPullRequestWorkflowInput({
-        author,
-        headSha: payload.pull_request.head.sha,
-        labels: payload.pull_request.labels.map((label) => label.name),
-        owner: payload.repository.owner.login,
-        pullNumber,
-        repo: payload.repository.name,
-        sender,
-      });
+      const input = await createPullRequestWorkflowInput(
+        {
+          author,
+          headSha: payload.pull_request.head.sha,
+          labels: payload.pull_request.labels.map((label) => label.name),
+          owner: payload.repository.owner.login,
+          pullNumber,
+          repo: payload.repository.name,
+          sender,
+        },
+        payload,
+        octokit,
+      );
       const result = await processPullRequestChange(input, buildWorkflowDependencies(octokit));
 
       console.info(
@@ -94,15 +101,19 @@ export function registerGithubHandlers(
     const reviewer = payload.review.user?.login;
     const sender = payload.sender.login;
     if (octokit !== undefined && author !== undefined && reviewer !== undefined) {
-      const input = createPullRequestWorkflowInput({
-        author,
-        headSha: payload.pull_request.head.sha,
-        labels: payload.pull_request.labels.map((label) => label.name),
-        owner: payload.repository.owner.login,
-        pullNumber: payload.pull_request.number,
-        repo: payload.repository.name,
-        sender,
-      });
+      const input = await createPullRequestWorkflowInput(
+        {
+          author,
+          headSha: payload.pull_request.head.sha,
+          labels: payload.pull_request.labels.map((label) => label.name),
+          owner: payload.repository.owner.login,
+          pullNumber: payload.pull_request.number,
+          repo: payload.repository.name,
+          sender,
+        },
+        payload,
+        octokit,
+      );
       const result = await processSubmittedReview(
         {
           ...input,
@@ -139,13 +150,40 @@ export function registerGithubHandlers(
   });
 }
 
-function createPullRequestWorkflowInput(
-  input: Omit<PullRequestWorkflowInput, "now">,
-): PullRequestWorkflowInput {
+async function createPullRequestWorkflowInput(
+  input: Omit<PullRequestWorkflowInput, "changedFilesSinceLastApproval" | "now">,
+  payload: unknown,
+  octokit: GithubWorkflowOctokit,
+): Promise<PullRequestWorkflowInput> {
+  const changedFilesSinceLastApproval = await getChangedFilesSinceLastApproval(
+    input,
+    payload,
+    octokit,
+  );
+
   return {
     ...input,
+    changedFilesSinceLastApproval,
     now: new Date().toISOString(),
   };
+}
+
+async function getChangedFilesSinceLastApproval(
+  input: Omit<PullRequestWorkflowInput, "changedFilesSinceLastApproval" | "now">,
+  payload: unknown,
+  octokit: GithubWorkflowOctokit,
+): Promise<string[] | undefined> {
+  const beforeSha = getSynchronizeBeforeSha(payload);
+  if (beforeSha === undefined) {
+    return undefined;
+  }
+
+  return listChangedFilesBetweenCommits(octokit, {
+    base: beforeSha,
+    head: input.headSha,
+    owner: input.owner,
+    repo: input.repo,
+  });
 }
 
 function buildWorkflowDependencies(
@@ -228,4 +266,16 @@ function getInstallationId(payload: unknown): number | undefined {
   }
 
   return typeof installation.id === "number" ? installation.id : undefined;
+}
+
+function getSynchronizeBeforeSha(payload: unknown): string | undefined {
+  if (typeof payload !== "object" || payload === null || !("action" in payload)) {
+    return undefined;
+  }
+
+  if (payload.action !== "synchronize" || !("before" in payload)) {
+    return undefined;
+  }
+
+  return typeof payload.before === "string" ? payload.before : undefined;
 }

@@ -8,6 +8,11 @@ export {
   type ResolvedGithubUser,
 } from "./identity.js";
 export {
+  listChangedFilesBetweenCommits,
+  type CommitCompareOctokit,
+  type CommitCompareRef,
+} from "./commit-compare.js";
+export {
   loadOwnershipTree,
   type OwnershipTreeOctokit,
   type RepositoryRef,
