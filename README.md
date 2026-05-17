@@ -1,0 +1,57 @@
+# Clearance
+
+Clearance is a GitHub App for hierarchical ownership rules, explicit AND/OR approval requirements, scoped stale review handling, smart reviewer assignment, escalation, and inline `OWNERS.toml` validation.
+
+This repository is currently scaffolded as a TypeScript GitHub App. The first build step establishes the runtime, test harness, linting, CI, and an initial parser boundary for `OWNERS.toml`.
+
+## Development
+
+Requirements:
+
+- Node.js 20 or newer
+- npm 11 or newer
+- GitHub App credentials for local webhook testing
+
+Install dependencies:
+
+```sh
+npm install
+```
+
+Copy the environment template:
+
+```sh
+cp .env.example .env
+```
+
+Run the local webhook server:
+
+```sh
+npm run dev
+```
+
+The app listens on `PORT` and accepts GitHub webhook deliveries at `WEBHOOK_PATH`.
+
+## Scripts
+
+- `npm run build` compiles TypeScript into `dist/`
+- `npm run typecheck` runs TypeScript without emitting files
+- `npm run lint` runs Oxlint with TypeScript, import, Node, Vitest, Unicorn, and OXC rules
+- `npm test` runs Vitest
+- `npm run format` checks formatting
+
+## Current Shape
+
+- `src/server.ts` starts the GitHub webhook server
+- `src/github/handlers.ts` registers first webhook handlers
+- `src/owners/schema.ts` parses and validates the initial `OWNERS.toml` structure
+- `examples/OWNERS.toml` mirrors the draft spec's example configuration
+
+## Status Checks
+
+The planned GitHub status checks are:
+
+- `clearance/review`
+- `clearance/config`
+
+The first scaffold logs relevant pull request events only. Status creation, sticky PR comments, reviewer assignment, scoped approval tracking, and escalation are implementation milestones after the project foundation.
