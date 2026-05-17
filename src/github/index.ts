@@ -12,4 +12,16 @@ export {
   type OwnershipTreeOctokit,
   type RepositoryRef,
 } from "./ownership-tree.js";
+export {
+  upsertStickyClearanceComment,
+  type PullRequestRef,
+  type StickyCommentOctokit,
+  type StickyCommentResult,
+} from "./sticky-comment.js";
+export {
+  setCommitStatus,
+  setCommitStatuses,
+  type CommitStatusRef,
+  type GithubStatusesOctokit,
+} from "./statuses.js";
 export { ownersFileName, type OwnershipFile, type OwnershipTree } from "../owners/index.js";

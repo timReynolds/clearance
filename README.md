@@ -43,12 +43,15 @@ The app listens on `PORT` and accepts GitHub webhook deliveries at `WEBHOOK_PATH
 ## Current Shape
 
 - `src/server.ts` starts the GitHub webhook server
+- `src/assignment/assignment.ts` ranks and selects reviewers from candidate signals
+- `src/checks/checks.ts` decides the `clearance/config` and `clearance/review` check states
 - `src/github/handlers.ts` registers first webhook handlers
 - `src/github/identity.ts` resolves GitHub users, teams, and reviewer candidates through Octokit
 - `src/github/ownership-tree.ts` fetches repository trees and blobs through Octokit
 - `src/owners/schema.ts` parses and validates the initial `OWNERS.toml` structure
 - `src/owners/tree.ts` discovers and assembles loaded ownership trees without Octokit
 - `src/resolution/resolution.ts` resolves changed files into required approvals and notifications
+- `src/state/state.ts` serializes Clearance state and renders the sticky PR comment body
 - `examples/OWNERS.toml` mirrors the draft spec's example configuration
 
 ## Status Checks
