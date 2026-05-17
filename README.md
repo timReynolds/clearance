@@ -51,6 +51,7 @@ The app listens on `PORT` and accepts GitHub webhook deliveries at `WEBHOOK_PATH
 - `src/owners/schema.ts` parses and validates the initial `OWNERS.toml` structure
 - `src/owners/tree.ts` discovers and assembles loaded ownership trees without Octokit
 - `src/resolution/resolution.ts` resolves changed files into required approvals and notifications
+- `src/state/review-tracking.ts` records review approvals and scoped stale invalidation
 - `src/state/state.ts` serializes Clearance state and renders the sticky PR comment body
 - `examples/OWNERS.toml` mirrors the draft spec's example configuration
 

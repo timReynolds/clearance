@@ -13,3 +13,12 @@ export {
   type ClearanceStateWarning,
   type StateEvent,
 } from "./state.js";
+export {
+  invalidateStaleApprovals,
+  rebuildReviewState,
+  recordSubmittedReview,
+  type RebuildReviewStateInput,
+  type ReviewRequirementDefinition,
+  type ScopedInvalidationInput,
+  type SubmittedReviewInput,
+} from "./review-tracking.js";

@@ -6,6 +6,7 @@ export type ClearanceStateRequirement = {
   approvedHeadSha?: string;
   identity: string;
   label: string;
+  relevantFiles?: string[];
   requiredCount: number;
   status: "approved" | "pending";
   type: "and" | "or";

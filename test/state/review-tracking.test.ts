@@ -1,0 +1,217 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  createEmptyClearanceState,
+  invalidateStaleApprovals,
+  rebuildReviewState,
+  recordSubmittedReview,
+  type ReviewRequirementDefinition,
+} from "../../src/state/index.js";
+
+describe("review tracking", () => {
+  it("rebuilds requirements while preserving approvals for the current head SHA", () => {
+    const state = rebuildReviewState({
+      definitions: definitions(),
+      headSha: "head-2",
+      previousState: {
+        ...createEmptyClearanceState(),
+        approvals: [
+          {
+            approvedAt: "2026-05-17T10:00:00.000Z",
+            headSha: "head-2",
+            requirementIdentity: "and:platform",
+            reviewer: "alice",
+          },
+          {
+            approvedAt: "2026-05-17T10:00:00.000Z",
+            headSha: "old-head",
+            requirementIdentity: "and:security",
+            reviewer: "carol",
+          },
+        ],
+      },
+    });
+
+    expect(state.requirements).toEqual([
+      expect.objectContaining({
+        approvedBy: ["alice"],
+        approvedHeadSha: "head-2",
+        identity: "and:platform",
+        status: "approved",
+      }),
+      expect.objectContaining({
+        approvedBy: [],
+        approvedHeadSha: undefined,
+        identity: "and:security",
+        status: "pending",
+      }),
+    ]);
+  });
+
+  it("records approvals against matching requirements at the current head SHA", () => {
+    const initialState = rebuildReviewState({
+      definitions: definitions(),
+      headSha: "head-1",
+    });
+
+    const state = recordSubmittedReview(initialState, {
+      approvedAt: "2026-05-17T10:00:00.000Z",
+      definitions: definitions(),
+      headSha: "head-1",
+      reviewer: "carol",
+      state: "approved",
+    });
+
+    expect(state.approvals).toEqual([
+      {
+        approvedAt: "2026-05-17T10:00:00.000Z",
+        headSha: "head-1",
+        requirementIdentity: "and:security",
+        reviewer: "carol",
+      },
+    ]);
+    expect(
+      state.requirements.find((requirement) => requirement.identity === "and:security"),
+    ).toEqual(
+      expect.objectContaining({
+        approvedBy: ["carol"],
+        approvedHeadSha: "head-1",
+        status: "approved",
+      }),
+    );
+  });
+
+  it("ignores non-approval reviews and reviewers that do not match any requirement", () => {
+    const initialState = rebuildReviewState({
+      definitions: definitions(),
+      headSha: "head-1",
+    });
+
+    expect(
+      recordSubmittedReview(initialState, {
+        approvedAt: "2026-05-17T10:00:00.000Z",
+        definitions: definitions(),
+        headSha: "head-1",
+        reviewer: "mallory",
+        state: "approved",
+      }),
+    ).toEqual(initialState);
+    expect(
+      recordSubmittedReview(initialState, {
+        approvedAt: "2026-05-17T10:00:00.000Z",
+        definitions: definitions(),
+        headSha: "head-1",
+        reviewer: "alice",
+        state: "commented",
+      }),
+    ).toEqual(initialState);
+  });
+
+  it("invalidates only approvals whose relevant files changed", () => {
+    const approvedState = rebuildReviewState({
+      definitions: definitions(),
+      headSha: "head-1",
+      previousState: {
+        ...createEmptyClearanceState(),
+        approvals: [
+          {
+            approvedAt: "2026-05-17T10:00:00.000Z",
+            headSha: "head-1",
+            requirementIdentity: "and:platform",
+            reviewer: "alice",
+          },
+          {
+            approvedAt: "2026-05-17T10:05:00.000Z",
+            headSha: "head-1",
+            requirementIdentity: "and:security",
+            reviewer: "carol",
+          },
+        ],
+      },
+    });
+
+    const nextState = invalidateStaleApprovals(approvedState, {
+      changedFiles: ["src/index.ts"],
+      definitions: definitions(),
+      headSha: "head-2",
+    });
+
+    expect(nextState.approvals).toEqual([
+      {
+        approvedAt: "2026-05-17T10:05:00.000Z",
+        headSha: "head-1",
+        requirementIdentity: "and:security",
+        reviewer: "carol",
+      },
+    ]);
+    expect(nextState.requirements).toEqual([
+      expect.objectContaining({
+        approvedBy: [],
+        identity: "and:platform",
+        status: "pending",
+      }),
+      expect.objectContaining({
+        approvedBy: ["carol"],
+        approvedHeadSha: "head-1",
+        identity: "and:security",
+        status: "approved",
+      }),
+    ]);
+  });
+
+  it("preserves prior approvals when a new push does not touch relevant files", () => {
+    const approvedState = rebuildReviewState({
+      definitions: definitions(),
+      headSha: "head-1",
+      previousState: {
+        ...createEmptyClearanceState(),
+        approvals: [
+          {
+            approvedAt: "2026-05-17T10:00:00.000Z",
+            headSha: "head-1",
+            requirementIdentity: "and:platform",
+            reviewer: "alice",
+          },
+        ],
+      },
+    });
+
+    const nextState = invalidateStaleApprovals(approvedState, {
+      changedFiles: ["docs/readme.md"],
+      definitions: definitions(),
+      headSha: "head-2",
+    });
+
+    expect(nextState.approvals).toEqual(approvedState.approvals);
+    expect(
+      nextState.requirements.find((requirement) => requirement.identity === "and:platform"),
+    ).toEqual(
+      expect.objectContaining({
+        approvedBy: ["alice"],
+        approvedHeadSha: "head-1",
+        status: "approved",
+      }),
+    );
+  });
+});
+
+function definitions(): ReviewRequirementDefinition[] {
+  return [
+    {
+      eligibleReviewers: ["alice", "bob"],
+      identity: "and:platform",
+      label: "Platform",
+      relevantFiles: ["src/index.ts"],
+      requiredCount: 1,
+      type: "and",
+    },
+    {
+      eligibleReviewers: ["carol"],
+      identity: "and:security",
+      label: "Security",
+      relevantFiles: ["security/policy.ts"],
+      requiredCount: 1,
+      type: "and",
+    },
+  ];
+}
