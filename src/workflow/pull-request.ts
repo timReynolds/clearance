@@ -14,6 +14,7 @@ import { evaluateOverride } from "../override/index.js";
 import type { OwnersDiagnostic, OwnershipTree } from "../owners/index.js";
 import { resolveOwnership, type OwnershipResolution } from "../resolution/index.js";
 import {
+  invalidateStaleApprovals,
   parseClearanceState,
   rebuildReviewState,
   recordSubmittedReview,
@@ -25,6 +26,7 @@ import type { GithubIdentityResolution } from "../github/index.js";
 
 export type PullRequestWorkflowInput = {
   author: string;
+  changedFilesSinceLastApproval?: string[];
   headSha: string;
   labels: string[];
   now: string;
@@ -78,14 +80,22 @@ export async function processPullRequestChange(
   const previousState = parseClearanceState(
     (await dependencies.findStickyComment(input))?.body,
   ).state;
-  const state = rebuildReviewState({
-    definitions: context.definitions,
-    headSha: input.headSha,
-    previousState: {
-      ...previousState,
-      warnings: context.reviewerAssignments.warnings.map((message) => ({ message })),
-    },
-  });
+  const baseState =
+    input.changedFilesSinceLastApproval === undefined
+      ? rebuildReviewState({
+          definitions: context.definitions,
+          headSha: input.headSha,
+          previousState,
+        })
+      : invalidateStaleApprovals(previousState, {
+          changedFiles: input.changedFilesSinceLastApproval,
+          definitions: context.definitions,
+          headSha: input.headSha,
+        });
+  const state = {
+    ...baseState,
+    warnings: context.reviewerAssignments.warnings.map((message) => ({ message })),
+  };
   const override = evaluateWorkflowOverride(input, context);
   const finalState =
     override.active === true

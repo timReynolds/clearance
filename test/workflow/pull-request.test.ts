@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { GithubIdentityResolution } from "../../src/github/index.js";
 import { parseOwnersToml, type OwnershipTree } from "../../src/owners/index.js";
+import { createEmptyClearanceState, renderClearanceComment } from "../../src/state/index.js";
 import {
   processPullRequestChange,
   processSubmittedReview,
@@ -138,6 +139,72 @@ require = [{ from = "@org/platform", count = 1 }]
       },
     ]);
   });
+
+  it("retains prior approvals on synchronize when changed files are irrelevant", async () => {
+    const dependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      existingComment: approvedComment("head-1"),
+      identityResolution: identityResolution(),
+      ownershipTree: ownershipTree(`
+[[rule]]
+paths = ["src/**"]
+require = [{ from = "@org/platform", count = 1 }]
+`),
+    });
+
+    const result = await processPullRequestChange(
+      {
+        ...input(),
+        changedFilesSinceLastApproval: ["docs/readme.md"],
+        headSha: "head-2",
+      },
+      dependencies,
+    );
+
+    expect(result.state.requirements[0]).toEqual(
+      expect.objectContaining({
+        approvedBy: ["alice"],
+        approvedHeadSha: "head-1",
+        status: "approved",
+      }),
+    );
+    expect(result.checks[1]).toEqual({
+      context: "clearance/review",
+      description: "All review requirements are satisfied",
+      state: "success",
+    });
+  });
+
+  it("invalidates prior approvals on synchronize when relevant files changed", async () => {
+    const dependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      existingComment: approvedComment("head-1"),
+      identityResolution: identityResolution(),
+      ownershipTree: ownershipTree(`
+[[rule]]
+paths = ["src/**"]
+require = [{ from = "@org/platform", count = 1 }]
+`),
+    });
+
+    const result = await processPullRequestChange(
+      {
+        ...input(),
+        changedFilesSinceLastApproval: ["src/index.ts"],
+        headSha: "head-2",
+      },
+      dependencies,
+    );
+
+    expect(result.state.requirements[0]).toEqual(
+      expect.objectContaining({
+        approvedBy: [],
+        approvedHeadSha: undefined,
+        status: "pending",
+      }),
+    );
+    expect(result.checks[1]?.state).toBe("pending");
+  });
 });
 
 function input(): PullRequestWorkflowInput {
@@ -239,4 +306,30 @@ function identityResolution(): GithubIdentityResolution {
     ]),
     users: new Map(),
   };
+}
+
+function approvedComment(headSha: string): string {
+  return renderClearanceComment({
+    ...createEmptyClearanceState(),
+    approvals: [
+      {
+        approvedAt: "2026-05-17T11:00:00.000Z",
+        headSha,
+        requirementIdentity: "and:.:@org/platform:1",
+        reviewer: "alice",
+      },
+    ],
+    requirements: [
+      {
+        approvedBy: ["alice"],
+        approvedHeadSha: headSha,
+        identity: "and:.:@org/platform:1",
+        label: "@org/platform approval",
+        relevantFiles: ["src/index.ts"],
+        requiredCount: 1,
+        status: "approved",
+        type: "and",
+      },
+    ],
+  });
 }
