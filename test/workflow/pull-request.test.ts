@@ -126,6 +126,11 @@ require = [{ from = "@org/platform", count = 1 }]
     const result = await processPullRequestChange(input(), dependencies);
 
     expect(result.requestedReviewers).toEqual([]);
+    expect(result.state.warnings).toEqual([
+      {
+        message: "OWNERS.toml $.rule[0]: bad config",
+      },
+    ]);
     expect(result.checks).toEqual([
       {
         context: "clearance/config",

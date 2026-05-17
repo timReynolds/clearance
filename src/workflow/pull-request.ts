@@ -94,7 +94,12 @@ export async function processPullRequestChange(
         });
   const state = {
     ...baseState,
-    warnings: context.reviewerAssignments.warnings.map((message) => ({ message })),
+    warnings: [
+      ...context.configDiagnostics.map((diagnostic) => ({
+        message: `${diagnostic.filePath} ${diagnostic.schemaPath}: ${diagnostic.message}`,
+      })),
+      ...context.reviewerAssignments.warnings.map((message) => ({ message })),
+    ],
   };
   const override = evaluateWorkflowOverride(input, context);
   const finalState =
