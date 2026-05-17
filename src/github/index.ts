@@ -24,4 +24,15 @@ export {
   type CommitStatusRef,
   type GithubStatusesOctokit,
 } from "./statuses.js";
+export {
+  listChangedPullRequestFiles,
+  type PullRequestFilesOctokit,
+  type PullRequestFilesRef,
+} from "./pull-request-files.js";
+export {
+  requestPullRequestReviewers,
+  type PullRequestReviewersOctokit,
+  type PullRequestReviewersRef,
+} from "./reviewers.js";
+export { findStickyClearanceComment, type StickyClearanceComment } from "./sticky-comment.js";
 export { ownersFileName, type OwnershipFile, type OwnershipTree } from "../owners/index.js";

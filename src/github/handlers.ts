@@ -1,8 +1,44 @@
 import type { Webhooks } from "@octokit/webhooks";
 
+import {
+  findStickyClearanceComment,
+  listChangedPullRequestFiles,
+  loadOwnershipTree,
+  requestPullRequestReviewers,
+  resolveGithubIdentities,
+  setCommitStatuses,
+  upsertStickyClearanceComment,
+  type GithubIdentityOctokit,
+  type GithubStatusesOctokit,
+  type OwnershipTreeOctokit,
+  type PullRequestFilesOctokit,
+  type PullRequestReviewersOctokit,
+  type StickyCommentOctokit,
+} from "./index.js";
+import {
+  processPullRequestChange,
+  processSubmittedReview,
+  type PullRequestWorkflowDependencies,
+  type PullRequestWorkflowInput,
+} from "../workflow/index.js";
+
 const pullRequestActions = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
 
-export function registerGithubHandlers(webhooks: Webhooks): void {
+export type GithubWorkflowOctokit = GithubIdentityOctokit &
+  GithubStatusesOctokit &
+  OwnershipTreeOctokit &
+  PullRequestFilesOctokit &
+  PullRequestReviewersOctokit &
+  StickyCommentOctokit;
+
+export type GithubInstallationClientFactory = {
+  getInstallationOctokit(installationId: number): Promise<GithubWorkflowOctokit>;
+};
+
+export function registerGithubHandlers(
+  webhooks: Webhooks,
+  installationClientFactory?: GithubInstallationClientFactory,
+): void {
   webhooks.on("pull_request", async ({ name, payload }) => {
     if (!pullRequestActions.has(payload.action)) {
       return;
@@ -10,6 +46,32 @@ export function registerGithubHandlers(webhooks: Webhooks): void {
 
     const repository = payload.repository.full_name;
     const pullNumber = payload.pull_request.number;
+    const octokit = await getPayloadOctokit(payload, installationClientFactory);
+    const author = payload.pull_request.user?.login;
+    const sender = payload.sender?.login;
+
+    if (octokit !== undefined && author !== undefined && sender !== undefined) {
+      const input = createPullRequestWorkflowInput({
+        author,
+        headSha: payload.pull_request.head.sha,
+        labels: payload.pull_request.labels.map((label) => label.name),
+        owner: payload.repository.owner.login,
+        pullNumber,
+        repo: payload.repository.name,
+        sender,
+      });
+      const result = await processPullRequestChange(input, buildWorkflowDependencies(octokit));
+
+      console.info(
+        {
+          checks: result.checks,
+          pullNumber,
+          requestedReviewers: result.requestedReviewers,
+          repository,
+        },
+        "processed pull request event",
+      );
+    }
 
     console.info(
       {
@@ -27,6 +89,40 @@ export function registerGithubHandlers(webhooks: Webhooks): void {
       return;
     }
 
+    const octokit = await getPayloadOctokit(payload, installationClientFactory);
+    const author = payload.pull_request.user?.login;
+    const reviewer = payload.review.user?.login;
+    const sender = payload.sender.login;
+    if (octokit !== undefined && author !== undefined && reviewer !== undefined) {
+      const input = createPullRequestWorkflowInput({
+        author,
+        headSha: payload.pull_request.head.sha,
+        labels: payload.pull_request.labels.map((label) => label.name),
+        owner: payload.repository.owner.login,
+        pullNumber: payload.pull_request.number,
+        repo: payload.repository.name,
+        sender,
+      });
+      const result = await processSubmittedReview(
+        {
+          ...input,
+          reviewer,
+          reviewState: payload.review.state,
+        },
+        buildWorkflowDependencies(octokit),
+      );
+
+      console.info(
+        {
+          checks: result.checks,
+          pullNumber: payload.pull_request.number,
+          repository: payload.repository.full_name,
+          reviewer,
+        },
+        "processed pull request review event",
+      );
+    }
+
     console.info(
       {
         action: payload.action,
@@ -41,4 +137,95 @@ export function registerGithubHandlers(webhooks: Webhooks): void {
   webhooks.onError((error) => {
     console.error(error, "webhook processing failed");
   });
+}
+
+function createPullRequestWorkflowInput(
+  input: Omit<PullRequestWorkflowInput, "now">,
+): PullRequestWorkflowInput {
+  return {
+    ...input,
+    now: new Date().toISOString(),
+  };
+}
+
+function buildWorkflowDependencies(
+  octokit: GithubWorkflowOctokit,
+): PullRequestWorkflowDependencies {
+  return {
+    findStickyComment: async (input) =>
+      findStickyClearanceComment(octokit, {
+        owner: input.owner,
+        pullNumber: input.pullNumber,
+        repo: input.repo,
+      }),
+    listChangedFiles: async (input) =>
+      listChangedPullRequestFiles(octokit, {
+        owner: input.owner,
+        pullNumber: input.pullNumber,
+        repo: input.repo,
+      }),
+    loadOwnershipTree: async (input) =>
+      loadOwnershipTree(octokit, {
+        owner: input.owner,
+        ref: input.headSha,
+        repo: input.repo,
+      }),
+    requestReviewers: async (input, reviewers) =>
+      requestPullRequestReviewers(
+        octokit,
+        {
+          owner: input.owner,
+          pullNumber: input.pullNumber,
+          repo: input.repo,
+        },
+        reviewers,
+      ),
+    resolveIdentities: async (tree) => resolveGithubIdentities(octokit, tree.files),
+    setStatuses: async (input, decisions) =>
+      setCommitStatuses(
+        octokit,
+        {
+          owner: input.owner,
+          repo: input.repo,
+          sha: input.headSha,
+        },
+        decisions,
+      ),
+    upsertComment: async (input, body) => {
+      await upsertStickyClearanceComment(
+        octokit,
+        {
+          owner: input.owner,
+          pullNumber: input.pullNumber,
+          repo: input.repo,
+        },
+        body,
+      );
+    },
+  };
+}
+
+async function getPayloadOctokit(
+  payload: unknown,
+  installationClientFactory: GithubInstallationClientFactory | undefined,
+): Promise<GithubWorkflowOctokit | undefined> {
+  const installationId = getInstallationId(payload);
+  if (installationClientFactory === undefined || installationId === undefined) {
+    return undefined;
+  }
+
+  return installationClientFactory.getInstallationOctokit(installationId);
+}
+
+function getInstallationId(payload: unknown): number | undefined {
+  if (typeof payload !== "object" || payload === null || !("installation" in payload)) {
+    return undefined;
+  }
+
+  const installation = payload.installation;
+  if (typeof installation !== "object" || installation === null || !("id" in installation)) {
+    return undefined;
+  }
+
+  return typeof installation.id === "number" ? installation.id : undefined;
 }

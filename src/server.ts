@@ -5,7 +5,7 @@ import { createNodeMiddleware } from "@octokit/webhooks";
 import dotenv from "dotenv";
 
 import { readEnv } from "./env.js";
-import { registerGithubHandlers } from "./github/handlers.js";
+import { registerGithubHandlers, type GithubWorkflowOctokit } from "./github/handlers.js";
 
 dotenv.config();
 
@@ -19,7 +19,10 @@ const app = new App({
   },
 });
 
-registerGithubHandlers(app.webhooks);
+registerGithubHandlers(app.webhooks, {
+  getInstallationOctokit: async (installationId) =>
+    app.getInstallationOctokit(installationId) as unknown as Promise<GithubWorkflowOctokit>,
+});
 
 const server = createServer(
   createNodeMiddleware(app.webhooks, {

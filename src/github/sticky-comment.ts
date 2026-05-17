@@ -59,6 +59,11 @@ export type StickyCommentResult =
       updated: false;
     };
 
+export type StickyClearanceComment = {
+  body?: string;
+  id: number;
+};
+
 export async function upsertStickyClearanceComment(
   octokit: StickyCommentOctokit,
   pullRequest: PullRequestRef,
@@ -94,11 +99,11 @@ export async function upsertStickyClearanceComment(
   };
 }
 
-async function findStickyClearanceComment(
+export async function findStickyClearanceComment(
   octokit: StickyCommentOctokit,
   pullRequest: PullRequestRef,
   page = 1,
-): Promise<{ id: number } | undefined> {
+): Promise<StickyClearanceComment | undefined> {
   const response = await octokit.rest.issues.listComments({
     issue_number: pullRequest.pullNumber,
     owner: pullRequest.owner,
@@ -110,6 +115,7 @@ async function findStickyClearanceComment(
 
   if (match !== undefined) {
     return {
+      body: match.body,
       id: match.id,
     };
   }

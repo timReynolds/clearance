@@ -55,6 +55,7 @@ The app listens on `PORT` and accepts GitHub webhook deliveries at `WEBHOOK_PATH
 - `src/resolution/resolution.ts` resolves changed files into required approvals and notifications
 - `src/state/review-tracking.ts` records review approvals and scoped stale invalidation
 - `src/state/state.ts` serializes Clearance state and renders the sticky PR comment body
+- `src/workflow/pull-request.ts` composes ownership loading, resolution, assignment, state, comments, checks, and reviewer requests
 - `examples/OWNERS.toml` mirrors the draft spec's example configuration
 
 ## Status Checks
