@@ -98,6 +98,88 @@ describe("registerGithubHandlers", () => {
       repo: "clearance",
     });
   });
+
+  it("processes submitted pull_request_review webhooks", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const webhooks = new Webhooks({ secret: "test-secret" });
+    const octokit = createWorkflowOctokit();
+
+    registerGithubHandlers(webhooks, {
+      getInstallationOctokit: vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
+        async () => octokit,
+      ),
+    });
+
+    await webhooks.receive({
+      id: "delivery-id",
+      name: "pull_request_review",
+      payload: createPullRequestReviewPayload("submitted"),
+    } as unknown as EmitterWebhookEvent);
+
+    expect(octokit.rest.git.getTree).toHaveBeenCalledWith({
+      owner: "acme",
+      recursive: "1",
+      repo: "clearance",
+      tree_sha: "head-sha",
+    });
+    expect(octokit.rest.pulls.requestReviewers).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining("<!-- clearance-state:v1"),
+        issue_number: 42,
+      }),
+    );
+  });
+
+  it("ignores unsupported pull_request and pull_request_review actions", async () => {
+    const webhooks = new Webhooks({ secret: "test-secret" });
+    const getInstallationOctokit = vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
+      async () => createWorkflowOctokit(),
+    );
+
+    registerGithubHandlers(webhooks, { getInstallationOctokit });
+
+    await webhooks.receive({
+      id: "delivery-id-1",
+      name: "pull_request",
+      payload: createPullRequestPayload("closed"),
+    } as unknown as EmitterWebhookEvent);
+    await webhooks.receive({
+      id: "delivery-id-2",
+      name: "pull_request_review",
+      payload: createPullRequestReviewPayload("edited"),
+    } as unknown as EmitterWebhookEvent);
+
+    expect(getInstallationOctokit).not.toHaveBeenCalled();
+  });
+
+  it("logs receipt without processing when installation data is missing", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const webhooks = new Webhooks({ secret: "test-secret" });
+    const getInstallationOctokit = vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
+      async () => createWorkflowOctokit(),
+    );
+    const payload = createPullRequestPayload("opened");
+    delete payload.installation;
+
+    registerGithubHandlers(webhooks, { getInstallationOctokit });
+
+    await webhooks.receive({
+      id: "delivery-id",
+      name: "pull_request",
+      payload,
+    } as unknown as EmitterWebhookEvent);
+
+    expect(getInstallationOctokit).not.toHaveBeenCalled();
+    expect(console.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "opened",
+        pullNumber: 42,
+        repository: "acme/clearance",
+      }),
+      "received pull request event",
+    );
+  });
 });
 
 function createWorkflowOctokit(): GithubWorkflowOctokit {
@@ -191,13 +273,13 @@ require = [{ from = "@org/platform", count = 1 }]
   };
 }
 
-function createPullRequestPayload(action: "opened" | "synchronize") {
+function createPullRequestPayload(action: string) {
   return {
     action,
     before: action === "synchronize" ? "before-sha" : undefined,
     installation: {
       id: 123,
-    },
+    } as { id: number } | undefined,
     pull_request: {
       head: {
         sha: "head-sha",
@@ -217,6 +299,18 @@ function createPullRequestPayload(action: "opened" | "synchronize") {
     },
     sender: {
       login: "author",
+    },
+  };
+}
+
+function createPullRequestReviewPayload(action: string) {
+  return {
+    ...createPullRequestPayload(action),
+    review: {
+      state: "approved",
+      user: {
+        login: "alice",
+      },
     },
   };
 }
