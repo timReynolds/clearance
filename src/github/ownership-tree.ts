@@ -130,10 +130,17 @@ async function loadOwnershipFileContent(
       owner: repository.owner,
       repo: repository.repo,
     });
+    const decoded = decodeBlobContent(blobResponse.data);
+    if (!decoded.ok) {
+      return {
+        error: decoded.error,
+        path: file.path,
+      };
+    }
 
     return {
       path: file.path,
-      source: decodeBlobContent(blobResponse.data),
+      source: decoded.source,
     };
   } catch (error) {
     return {
@@ -143,21 +150,43 @@ async function loadOwnershipFileContent(
   }
 }
 
-function decodeBlobContent(data: { content?: string; encoding?: string }): string {
+type DecodeBlobResult =
+  | {
+      ok: true;
+      source: string;
+    }
+  | {
+      error: string;
+      ok: false;
+    };
+
+function decodeBlobContent(data: { content?: string; encoding?: string }): DecodeBlobResult {
   if (data.encoding !== "base64") {
-    throw new Error(`expected base64 blob encoding, received ${data.encoding ?? "unknown"}`);
+    return {
+      error: `expected base64 blob encoding, received ${data.encoding ?? "unknown"}`,
+      ok: false,
+    };
   }
 
   if (data.content === undefined) {
-    throw new Error("blob response did not include content");
+    return {
+      error: "blob response did not include content",
+      ok: false,
+    };
   }
 
   const content = data.content.replace(/\s/g, "");
   if (!isBase64(content)) {
-    throw new Error("blob content is not valid base64");
+    return {
+      error: "blob content is not valid base64",
+      ok: false,
+    };
   }
 
-  return Buffer.from(content, "base64").toString("utf8");
+  return {
+    ok: true,
+    source: Buffer.from(content, "base64").toString("utf8"),
+  };
 }
 
 function isBase64(value: string): boolean {
