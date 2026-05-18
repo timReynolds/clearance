@@ -51,9 +51,15 @@ export type PullRequestWorkflowDependencies = {
   upsertComment(input: PullRequestWorkflowInput, body: string): Promise<void>;
 };
 
+export type WorkflowSideEffectFailure = {
+  message: string;
+  operation: "request-reviewers" | "set-statuses" | "upsert-comment";
+};
+
 export type PullRequestWorkflowResult = {
   changedFiles: string[];
   checks: CheckDecision[];
+  sideEffectFailures: WorkflowSideEffectFailure[];
   requestedReviewers: string[];
   state: ClearanceState;
 };
@@ -119,15 +125,25 @@ export async function processPullRequestChange(
       ? context.reviewerAssignments.assignments.flatMap((assignment) => assignment.reviewers)
       : [];
 
-  await Promise.all([
-    dependencies.upsertComment(input, renderClearanceComment(finalState)),
-    dependencies.setStatuses(input, checks),
-    dependencies.requestReviewers(input, requestedReviewers),
+  const sideEffectFailures = await runWorkflowSideEffects([
+    {
+      execute: () => dependencies.upsertComment(input, renderClearanceComment(finalState)),
+      operation: "upsert-comment",
+    },
+    {
+      execute: () => dependencies.setStatuses(input, checks),
+      operation: "set-statuses",
+    },
+    {
+      execute: () => dependencies.requestReviewers(input, requestedReviewers),
+      operation: "request-reviewers",
+    },
   ]);
 
   return {
     changedFiles: context.changedFiles,
     checks,
+    sideEffectFailures,
     requestedReviewers,
     state: finalState,
   };
@@ -150,14 +166,21 @@ export async function processSubmittedReview(
   });
   const checks = createWorkflowChecks(context, state, state.override !== undefined);
 
-  await Promise.all([
-    dependencies.upsertComment(input, renderClearanceComment(state)),
-    dependencies.setStatuses(input, checks),
+  const sideEffectFailures = await runWorkflowSideEffects([
+    {
+      execute: () => dependencies.upsertComment(input, renderClearanceComment(state)),
+      operation: "upsert-comment",
+    },
+    {
+      execute: () => dependencies.setStatuses(input, checks),
+      operation: "set-statuses",
+    },
   ]);
 
   return {
     changedFiles: context.changedFiles,
     checks,
+    sideEffectFailures,
     requestedReviewers: [],
     state,
   };
@@ -365,6 +388,33 @@ function createWorkflowChecks(
       requirements: state.requirements,
     }),
   ];
+}
+
+async function runWorkflowSideEffects(
+  effects: Array<{
+    execute(): Promise<void>;
+    operation: WorkflowSideEffectFailure["operation"];
+  }>,
+): Promise<WorkflowSideEffectFailure[]> {
+  const results = await Promise.all(
+    effects.map(async (effect): Promise<WorkflowSideEffectFailure | undefined> => {
+      try {
+        await effect.execute();
+        return undefined;
+      } catch (error) {
+        return {
+          message: getErrorMessage(error, "unknown error"),
+          operation: effect.operation,
+        };
+      }
+    }),
+  );
+
+  return results.filter((failure): failure is WorkflowSideEffectFailure => failure !== undefined);
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
 }
 
 function compareStrings(left: string, right: string): number {

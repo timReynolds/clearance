@@ -72,6 +72,7 @@ export function registerGithubHandlers(
       console.info(
         {
           checks: result.checks,
+          sideEffectFailures: result.sideEffectFailures,
           pullNumber,
           requestedReviewers: result.requestedReviewers,
           repository,
@@ -126,6 +127,7 @@ export function registerGithubHandlers(
       console.info(
         {
           checks: result.checks,
+          sideEffectFailures: result.sideEffectFailures,
           pullNumber: payload.pull_request.number,
           repository: payload.repository.full_name,
           reviewer,

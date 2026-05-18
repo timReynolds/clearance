@@ -145,6 +145,119 @@ require = [{ from = "@org/platform", count = 1 }]
     ]);
   });
 
+  it("returns side effect failures instead of throwing", async () => {
+    const dependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      identityResolution: identityResolution(),
+      ownershipTree: ownershipTree(`
+[[rule]]
+paths = ["src/**"]
+require = [{ from = "@org/platform", count = 1 }]
+`),
+    });
+    dependencies.requestReviewers = vi.fn<PullRequestWorkflowDependencies["requestReviewers"]>(
+      async () => {
+        throw new Error("reviewer API unavailable");
+      },
+    );
+
+    const result = await processPullRequestChange(input(), dependencies);
+
+    expect(result.sideEffectFailures).toEqual([
+      {
+        message: "reviewer API unavailable",
+        operation: "request-reviewers",
+      },
+    ]);
+    expect(result.requestedReviewers).toEqual(["alice"]);
+    expect(dependencies.upsertComment).toHaveBeenCalled();
+    expect(dependencies.setStatuses).toHaveBeenCalled();
+  });
+
+  it("returns submitted-review side effect failures instead of throwing", async () => {
+    const dependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      existingComment: approvedComment("head-sha"),
+      identityResolution: identityResolution(),
+      ownershipTree: ownershipTree(`
+[[rule]]
+paths = ["src/**"]
+require = [{ from = "@org/platform", count = 1 }]
+`),
+    });
+    dependencies.setStatuses = vi.fn<PullRequestWorkflowDependencies["setStatuses"]>(async () => {
+      throw new Error("status API unavailable");
+    });
+
+    const result = await processSubmittedReview(
+      {
+        ...input(),
+        reviewState: "approved",
+        reviewer: "alice",
+      },
+      dependencies,
+    );
+
+    expect(result.sideEffectFailures).toEqual([
+      {
+        message: "status API unavailable",
+        operation: "set-statuses",
+      },
+    ]);
+    expect(dependencies.upsertComment).toHaveBeenCalled();
+    expect(dependencies.requestReviewers).not.toHaveBeenCalled();
+  });
+
+  it("fails review checks when an OR requirement has no eligible reviewers", async () => {
+    const dependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      identityResolution: {
+        candidateReviewersByTeam: new Map(),
+        diagnostics: [],
+        teams: new Map([
+          [
+            "@org/platform",
+            {
+              actor: "@org/platform",
+              members: [],
+              org: "org",
+              slug: "platform",
+              type: "team",
+            },
+          ],
+          [
+            "@org/security",
+            {
+              actor: "@org/security",
+              members: [],
+              org: "org",
+              slug: "security",
+              type: "team",
+            },
+          ],
+        ]),
+        users: new Map(),
+      },
+      ownershipTree: ownershipTree(`
+[[rule]]
+paths = ["src/**"]
+require_any = [
+  { from = "@org/platform", count = 1 },
+  { from = "@org/security", count = 1 },
+]
+`),
+    });
+
+    const result = await processPullRequestChange(input(), dependencies);
+
+    expect(result.requestedReviewers).toEqual([]);
+    expect(result.checks[1]).toEqual({
+      context: "clearance/review",
+      description: "Requirement or:.:@org/platform:1|@org/security:1 has no eligible reviewers",
+      state: "failure",
+    });
+  });
+
   it("retains prior approvals on synchronize when changed files are irrelevant", async () => {
     const dependencies = createDependencies({
       changedFiles: ["src/index.ts"],
