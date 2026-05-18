@@ -32,6 +32,7 @@ describe("review tracking", () => {
       },
     });
 
+    expect(state.assignments).toEqual([]);
     expect(state.requirements).toEqual([
       expect.objectContaining({
         approvedBy: ["alice"],
@@ -45,6 +46,53 @@ describe("review tracking", () => {
         identity: "and:security",
         status: "pending",
       }),
+    ]);
+  });
+
+  it("drops assignments and approvals for requirements that no longer exist", () => {
+    const state = rebuildReviewState({
+      definitions: [definitions()[0] as ReviewRequirementDefinition],
+      headSha: "head-2",
+      previousState: {
+        ...createEmptyClearanceState(),
+        approvals: [
+          {
+            approvedAt: "2026-05-17T10:00:00.000Z",
+            headSha: "head-2",
+            requirementIdentity: "and:platform",
+            reviewer: "alice",
+          },
+          {
+            approvedAt: "2026-05-17T10:00:00.000Z",
+            headSha: "head-2",
+            requirementIdentity: "and:deleted",
+            reviewer: "mallory",
+          },
+        ],
+        assignments: [
+          {
+            assignedAt: "2026-05-17T09:00:00.000Z",
+            requirementIdentity: "and:platform",
+            reviewers: ["alice"],
+          },
+          {
+            assignedAt: "2026-05-17T09:00:00.000Z",
+            requirementIdentity: "and:deleted",
+            reviewers: ["mallory"],
+          },
+        ],
+      },
+    });
+
+    expect(state.approvals.map((approval) => approval.requirementIdentity)).toEqual([
+      "and:platform",
+    ]);
+    expect(state.assignments).toEqual([
+      {
+        assignedAt: "2026-05-17T09:00:00.000Z",
+        requirementIdentity: "and:platform",
+        reviewers: ["alice"],
+      },
     ]);
   });
 
@@ -79,6 +127,41 @@ describe("review tracking", () => {
         status: "approved",
       }),
     );
+  });
+
+  it("replaces an earlier approval from the same reviewer and requirement", () => {
+    const initialState = rebuildReviewState({
+      definitions: definitions(),
+      headSha: "head-1",
+      previousState: {
+        ...createEmptyClearanceState(),
+        approvals: [
+          {
+            approvedAt: "2026-05-17T09:00:00.000Z",
+            headSha: "old-head",
+            requirementIdentity: "and:platform",
+            reviewer: "alice",
+          },
+        ],
+      },
+    });
+
+    const state = recordSubmittedReview(initialState, {
+      approvedAt: "2026-05-17T10:00:00.000Z",
+      definitions: definitions(),
+      headSha: "head-1",
+      reviewer: "alice",
+      state: "approved",
+    });
+
+    expect(state.approvals).toEqual([
+      {
+        approvedAt: "2026-05-17T10:00:00.000Z",
+        headSha: "head-1",
+        requirementIdentity: "and:platform",
+        reviewer: "alice",
+      },
+    ]);
   });
 
   it("ignores non-approval reviews and reviewers that do not match any requirement", () => {
@@ -127,6 +210,18 @@ describe("review tracking", () => {
             reviewer: "carol",
           },
         ],
+        assignments: [
+          {
+            assignedAt: "2026-05-17T09:00:00.000Z",
+            requirementIdentity: "and:platform",
+            reviewers: ["alice"],
+          },
+          {
+            assignedAt: "2026-05-17T09:00:00.000Z",
+            requirementIdentity: "and:deleted",
+            reviewers: ["mallory"],
+          },
+        ],
       },
     });
 
@@ -143,6 +238,9 @@ describe("review tracking", () => {
         requirementIdentity: "and:security",
         reviewer: "carol",
       },
+    ]);
+    expect(nextState.assignments.map((assignment) => assignment.requirementIdentity)).toEqual([
+      "and:platform",
     ]);
     expect(nextState.requirements).toEqual([
       expect.objectContaining({
