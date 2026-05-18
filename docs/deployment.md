@@ -50,6 +50,7 @@ GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE K
 GITHUB_WEBHOOK_SECRET=change-me
 PORT=3000
 WEBHOOK_PATH=/api/github/webhooks
+ESCALATION_REPOSITORIES=owner/repo,another-owner/another-repo
 ```
 
 Private keys may contain escaped newlines. The app normalizes `\n` sequences at startup.
@@ -69,10 +70,17 @@ Run:
 npm start
 ```
 
+Run one escalation sweep:
+
+```sh
+npm run start:escalate
+```
+
 For local development:
 
 ```sh
 npm run dev
+npm run escalate
 ```
 
 ## 7. Local Webhook Testing
@@ -94,5 +102,5 @@ Open a pull request with a matching `OWNERS.toml` rule. Clearance should create 
 
 - Clearance stores V1 state only in the hidden JSON block inside the sticky PR comment.
 - The current HTTP service handles PR and review webhook workflows.
-- Escalation evaluation exists as a workflow module; a production scheduled runner should call it for open PRs on the cadence you choose.
+- Escalation runs as a commandable sweep over `ESCALATION_REPOSITORIES`; schedule `npm run start:escalate` with your platform scheduler.
 - No database is required for the current runtime.

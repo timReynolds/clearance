@@ -19,6 +19,8 @@
     "format:write": "prettier --write .",
     "lint": "oxlint . --deny-warnings",
     "lint:fix": "oxlint . --fix",
+    "escalate": "tsx src/escalation-runner.ts",
+    "start:escalate": "node dist/escalation-runner.js",
     "start": "node dist/server.js",
     "test": "vitest run",
     "test:watch": "vitest",

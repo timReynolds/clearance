@@ -181,6 +181,31 @@ users = ["@alice"]
     expect(repeatedDependencies.sendNotifications).toHaveBeenCalledWith(input(), []);
   });
 
+  it("stores escalation policy metadata on review requirements", async () => {
+    const dependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      identityResolution: identityResolution(),
+      ownershipTree: ownershipTree(`
+[[rule]]
+paths = ["src/**"]
+require = [{ from = "@org/platform", count = 1 }]
+escalation = { warn_after = "30m", escalate_after = "1h", fallback_after = "2h", fallback_team = "@org/leads", reset_on_push = true }
+`),
+    });
+
+    const result = await processPullRequestChange(input(), dependencies);
+
+    expect(result.state.requirements[0]).toEqual(
+      expect.objectContaining({
+        escalateAfter: "1h",
+        fallbackAfter: "2h",
+        fallbackTeam: "@org/leads",
+        resetOnPush: true,
+        warnAfter: "30m",
+      }),
+    );
+  });
+
   it("records submitted approvals and updates review checks", async () => {
     const dependencies = createDependencies({
       changedFiles: ["src/index.ts"],

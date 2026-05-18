@@ -46,5 +46,18 @@ export {
   type ReviewerSignalsOctokit,
   type ReviewerSignalsRef,
 } from "./reviewer-signals.js";
+export {
+  listOpenPullRequests,
+  type OpenPullRequest,
+  type OpenPullRequestRef,
+  type OpenPullRequestsOctokit,
+} from "./open-pull-requests.js";
+export {
+  runGithubEscalationSweep,
+  type EscalationPullResult,
+  type EscalationRunnerRepository,
+  type EscalationSweepResult,
+  type GithubEscalationRunnerOctokit,
+} from "./escalation-runner.js";
 export { findStickyClearanceComment, type StickyClearanceComment } from "./sticky-comment.js";
 export { ownersFileName, type OwnershipFile, type OwnershipTree } from "../owners/index.js";
