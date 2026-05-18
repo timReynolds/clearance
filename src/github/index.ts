@@ -47,6 +47,22 @@ export {
   type ReviewerSignalsRef,
 } from "./reviewer-signals.js";
 export {
+  enqueueGithubOutboxJob,
+  executeGithubOutboxJob,
+  githubOutboxJobTypes,
+  type GithubOutboxInstallationClientFactory,
+  type GithubOutboxJobInput,
+  type GithubOutboxJobType,
+  type GithubOutboxOctokit,
+  type GithubOutboxStore,
+} from "./outbox.js";
+export {
+  runGithubOutboxOnce,
+  type GithubOutboxRunOptions,
+  type GithubOutboxRunResult,
+  type GithubOutboxRunnerStore,
+} from "./outbox-runner.js";
+export {
   listOpenPullRequests,
   type OpenPullRequest,
   type OpenPullRequestRef,
@@ -58,6 +74,7 @@ export {
   type EscalationRunnerRepository,
   type EscalationSweepResult,
   type GithubEscalationRunnerOctokit,
+  type GithubEscalationRunnerStateStore,
 } from "./escalation-runner.js";
 export { findStickyClearanceComment, type StickyClearanceComment } from "./sticky-comment.js";
 export { ownersFileName, type OwnershipFile, type OwnershipTree } from "../owners/index.js";

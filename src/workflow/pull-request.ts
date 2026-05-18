@@ -55,9 +55,11 @@ export type PullRequestWorkflowDependencies = {
     reviewers: string[],
     changedFiles: string[],
   ): Promise<ReviewerSignal[]>;
+  loadState?(input: PullRequestWorkflowInput): Promise<ClearanceState | undefined>;
   loadOwnershipTree(input: PullRequestWorkflowInput): Promise<OwnershipTree>;
   requestReviewers(input: PullRequestWorkflowInput, reviewers: string[]): Promise<void>;
   resolveIdentities(tree: OwnershipTree): Promise<GithubIdentityResolution>;
+  saveState?(input: PullRequestWorkflowInput, state: ClearanceState): Promise<void>;
   sendNotifications(
     input: PullRequestWorkflowInput,
     notifications: NotificationRecord[],
@@ -101,9 +103,7 @@ export async function processPullRequestChange(
   dependencies: PullRequestWorkflowDependencies,
 ): Promise<PullRequestWorkflowResult> {
   const context = await buildWorkflowContext(input, dependencies);
-  const previousState = parseClearanceState(
-    (await dependencies.findStickyComment(input))?.body,
-  ).state;
+  const previousState = await loadPreviousState(input, dependencies);
   const baseState =
     input.changedFilesSinceLastApproval === undefined
       ? rebuildReviewState({
@@ -164,6 +164,8 @@ export async function processPullRequestChange(
     ].toSorted(compareStrings),
   };
 
+  await dependencies.saveState?.(input, finalStateWithNotifications);
+
   const sideEffectFailures = await runWorkflowSideEffects([
     {
       execute: () =>
@@ -198,9 +200,7 @@ export async function processSubmittedReview(
   dependencies: PullRequestWorkflowDependencies,
 ): Promise<PullRequestWorkflowResult> {
   const context = await buildWorkflowContext(input, dependencies);
-  const previousState = parseClearanceState(
-    (await dependencies.findStickyComment(input))?.body,
-  ).state;
+  const previousState = await loadPreviousState(input, dependencies);
   const state = recordSubmittedReview(previousState, {
     approvedAt: input.now,
     definitions: context.definitions,
@@ -209,6 +209,8 @@ export async function processSubmittedReview(
     state: input.reviewState,
   });
   const checks = createWorkflowChecks(context, state, state.override !== undefined);
+
+  await dependencies.saveState?.(input, state);
 
   const sideEffectFailures = await runWorkflowSideEffects([
     {
@@ -228,6 +230,18 @@ export async function processSubmittedReview(
     requestedReviewers: [],
     state,
   };
+}
+
+async function loadPreviousState(
+  input: PullRequestWorkflowInput,
+  dependencies: PullRequestWorkflowDependencies,
+): Promise<ClearanceState> {
+  const storedState = await dependencies.loadState?.(input);
+  if (storedState !== undefined) {
+    return storedState;
+  }
+
+  return parseClearanceState((await dependencies.findStickyComment(input))?.body).state;
 }
 
 async function buildWorkflowContext(

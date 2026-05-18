@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   runGithubEscalationSweep,
   type GithubEscalationRunnerOctokit,
+  type GithubEscalationRunnerStateStore,
 } from "../../src/github/index.js";
 import { createEmptyClearanceState, renderClearanceComment } from "../../src/state/index.js";
 
@@ -103,6 +104,76 @@ describe("runGithubEscalationSweep", () => {
       },
     ]);
     expect(octokit.rest.pulls.requestReviewers).not.toHaveBeenCalled();
+  });
+
+  it("uses stored Clearance state when the sticky comment is missing", async () => {
+    const octokit = createEscalationRunnerOctokit({
+      stickyCommentBody: undefined,
+    });
+    const stateStore: GithubEscalationRunnerStateStore = {
+      loadPullRequestState: vi.fn<GithubEscalationRunnerStateStore["loadPullRequestState"]>(
+        async () => ({
+          ...createEmptyClearanceState(),
+          requirements: [
+            {
+              approvedBy: [],
+              assignedReviewers: ["alice"],
+              eligibleReviewers: ["alice"],
+              identity: "and:platform",
+              label: "Platform",
+              pendingSince: "2026-05-17T07:00:00.000Z",
+              requiredCount: 1,
+              status: "pending",
+              type: "and",
+              warnAfter: "1h",
+            },
+          ],
+        }),
+      ),
+      savePullRequestState: vi.fn<GithubEscalationRunnerStateStore["savePullRequestState"]>(
+        async () => {},
+      ),
+    };
+
+    const result = await runGithubEscalationSweep(
+      octokit,
+      {
+        owner: "acme",
+        repo: "clearance",
+      },
+      "2026-05-17T12:00:00.000Z",
+      { stateStore },
+    );
+
+    expect(result.pullRequests).toEqual([
+      {
+        actions: 1,
+        pullNumber: 42,
+        sideEffectFailures: 0,
+        status: "processed",
+      },
+    ]);
+    expect(stateStore.savePullRequestState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: "acme",
+        pullNumber: 42,
+        repo: "clearance",
+      }),
+      expect.objectContaining({
+        escalations: [
+          expect.objectContaining({
+            requirementIdentity: "and:platform",
+            type: "warning",
+          }),
+        ],
+      }),
+    );
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining("<!-- clearance-state:v1"),
+        issue_number: 42,
+      }),
+    );
   });
 });
 

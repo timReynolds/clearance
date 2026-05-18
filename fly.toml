@@ -1,0 +1,33 @@
+app = "clearance-tr"
+primary_region = "lhr"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  DATABASE_MAX_CONNECTIONS = "5"
+  DATABASE_PREPARE_STATEMENTS = "false"
+  OUTBOX_BATCH_SIZE = "25"
+  OUTBOX_MAX_ATTEMPTS = "5"
+  OUTBOX_POLL_INTERVAL_MS = "5000"
+  PORT = "8080"
+  WEBHOOK_PATH = "/api/github/webhooks"
+
+[processes]
+  app = "node dist/server.js"
+  outbox = "node dist/outbox-runner.js"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/healthz"

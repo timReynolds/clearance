@@ -138,6 +138,40 @@ require = [{ from = "@org/platform", count = 1 }]
     expect(dependencies.requestReviewers).toHaveBeenCalledWith(input(), []);
   });
 
+  it("prefers persisted state over sticky comment state when a store is configured", async () => {
+    const dependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      identityResolution: identityResolution(),
+      ownershipTree: ownershipTree(`
+[[rule]]
+paths = ["src/**"]
+require = [{ from = "@org/platform", count = 1 }]
+`),
+    });
+    dependencies.loadState = vi.fn<NonNullable<PullRequestWorkflowDependencies["loadState"]>>(
+      async () => ({
+        ...createEmptyClearanceState(),
+        assignments: [
+          {
+            assignedAt: "2026-05-17T10:00:00.000Z",
+            requirementIdentity: "and:.:@org/platform:1",
+            reviewers: ["alice"],
+          },
+        ],
+      }),
+    );
+    dependencies.saveState = vi.fn<NonNullable<PullRequestWorkflowDependencies["saveState"]>>(
+      async () => {},
+    );
+
+    const result = await processPullRequestChange(input(), dependencies);
+
+    expect(dependencies.findStickyComment).not.toHaveBeenCalled();
+    expect(result.requestedReviewers).toEqual([]);
+    expect(result.state.assignments[0]?.assignedAt).toBe("2026-05-17T10:00:00.000Z");
+    expect(dependencies.saveState).toHaveBeenCalledWith(input(), result.state);
+  });
+
   it("sends new notifications once and records them in sticky state", async () => {
     const dependencies = createDependencies({
       changedFiles: ["docs/readme.md"],

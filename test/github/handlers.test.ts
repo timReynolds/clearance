@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   registerGithubHandlers,
+  type GithubHandlerStateStore,
   type GithubInstallationClientFactory,
   type GithubWorkflowOctokit,
 } from "../../src/github/handlers.js";
@@ -181,6 +182,110 @@ describe("registerGithubHandlers", () => {
         repository: "acme/clearance",
       }),
       "received pull request event",
+    );
+  });
+
+  it("skips duplicate webhook deliveries when the state store reports an existing delivery", async () => {
+    const webhooks = new Webhooks({ secret: "test-secret" });
+    const getInstallationOctokit = vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
+      async () => createWorkflowOctokit(),
+    );
+    const stateStore: GithubHandlerStateStore = {
+      beginWebhookDelivery: vi.fn<NonNullable<GithubHandlerStateStore["beginWebhookDelivery"]>>(
+        async () => false,
+      ),
+      loadPullRequestState: vi.fn<GithubHandlerStateStore["loadPullRequestState"]>(
+        async () => undefined,
+      ),
+      savePullRequestState: vi.fn<GithubHandlerStateStore["savePullRequestState"]>(async () => {}),
+    };
+
+    registerGithubHandlers(webhooks, { getInstallationOctokit }, { stateStore });
+
+    await webhooks.receive({
+      id: "delivery-id",
+      name: "pull_request",
+      payload: createPullRequestPayload("opened"),
+    } as unknown as EmitterWebhookEvent);
+
+    expect(stateStore.beginWebhookDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deliveryId: "delivery-id",
+        event: "pull_request",
+      }),
+    );
+    expect(getInstallationOctokit).not.toHaveBeenCalled();
+  });
+
+  it("enqueues GitHub side effects when an outbox store is configured", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const webhooks = new Webhooks({ secret: "test-secret" });
+    const octokit = createWorkflowOctokit();
+    const stateStore: GithubHandlerStateStore = {
+      beginWebhookDelivery: vi.fn<NonNullable<GithubHandlerStateStore["beginWebhookDelivery"]>>(
+        async () => true,
+      ),
+      enqueueOutboxJob: vi.fn<NonNullable<GithubHandlerStateStore["enqueueOutboxJob"]>>(
+        async () => {},
+      ),
+      loadPullRequestState: vi.fn<GithubHandlerStateStore["loadPullRequestState"]>(
+        async () => undefined,
+      ),
+      recordWebhookDelivery: vi.fn<NonNullable<GithubHandlerStateStore["recordWebhookDelivery"]>>(
+        async () => {},
+      ),
+      savePullRequestState: vi.fn<GithubHandlerStateStore["savePullRequestState"]>(async () => {}),
+    };
+
+    registerGithubHandlers(
+      webhooks,
+      {
+        getInstallationOctokit: vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
+          async () => octokit,
+        ),
+      },
+      { stateStore },
+    );
+
+    await webhooks.receive({
+      id: "delivery-id",
+      name: "pull_request",
+      payload: createPullRequestPayload("opened"),
+    } as unknown as EmitterWebhookEvent);
+
+    expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
+    expect(octokit.rest.pulls.requestReviewers).not.toHaveBeenCalled();
+    expect(octokit.rest.repos.createCommitStatus).not.toHaveBeenCalled();
+    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledTimes(3);
+    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          body: expect.stringContaining("<!-- clearance-state:v1"),
+          installationId: 123,
+          pullNumber: 42,
+        }),
+        type: "github.upsert-comment",
+      }),
+    );
+    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          reviewers: ["alice"],
+        }),
+        type: "github.request-reviewers",
+      }),
+    );
+    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          decisions: expect.arrayContaining([
+            expect.objectContaining({
+              context: "clearance/config",
+            }),
+          ]),
+        }),
+        type: "github.set-statuses",
+      }),
     );
   });
 });

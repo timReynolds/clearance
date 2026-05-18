@@ -32,6 +32,7 @@ Covered areas:
 - `resolution`: changed-file rule matching, inheritance, AND/OR requirements, notifications.
 - `assignment`: deterministic reviewer scoring and warning behavior.
 - `state`: hidden state parsing, rendering, review approvals, scoped invalidation.
+- `db`: persistence boundary behavior is covered through workflow tests; use Supabase local database checks when changing migrations or Drizzle schema.
 - `checks`: status decisions.
 - `escalation`: timing decisions.
 - `override`: break-glass authorization.

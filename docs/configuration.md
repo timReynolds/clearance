@@ -100,7 +100,8 @@ On PR open, reopen, ready-for-review, or synchronize, Clearance:
 2. Validates configuration and GitHub identities.
 3. Resolves changed files to review requirements.
 4. Assigns reviewers.
-5. Writes or updates one sticky Clearance comment.
-6. Sets `clearance/config` and `clearance/review` statuses.
+5. Persists Clearance state when database storage is configured.
+6. Writes or updates one sticky Clearance comment.
+7. Sets `clearance/config` and `clearance/review` statuses.
 
 On review submission, Clearance records approvals against the current head SHA. On synchronize, approvals are invalidated only when relevant files changed.

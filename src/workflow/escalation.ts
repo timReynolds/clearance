@@ -13,6 +13,7 @@ import {
 
 export type EscalationWorkflowInput = {
   existingCommentBody?: string;
+  existingState?: ClearanceState;
   now: string;
   requirements: EscalationRequirement[];
 };
@@ -20,6 +21,7 @@ export type EscalationWorkflowInput = {
 export type EscalationWorkflowDependencies = {
   postComment(body: string): Promise<void>;
   requestReviewers(reviewers: string[]): Promise<void>;
+  saveState?(state: ClearanceState): Promise<void>;
   upsertComment(body: string): Promise<void>;
 };
 
@@ -38,13 +40,15 @@ export async function processEscalationRun(
   input: EscalationWorkflowInput,
   dependencies: EscalationWorkflowDependencies,
 ): Promise<EscalationWorkflowResult> {
-  const state = parseClearanceState(input.existingCommentBody).state;
+  const state = input.existingState ?? parseClearanceState(input.existingCommentBody).state;
   const actions = evaluateEscalations({
     existingEvents: [...state.escalations, ...state.fallbackNotifications],
     now: input.now,
     requirements: input.requirements,
   });
   const nextState = applyEscalationActions(state, actions, input.now);
+
+  await dependencies.saveState?.(nextState);
 
   const sideEffectFailures = await runEscalationSideEffects([
     {
