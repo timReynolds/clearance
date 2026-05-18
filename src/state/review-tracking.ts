@@ -6,17 +6,24 @@ import {
 } from "./state.js";
 
 export type ReviewRequirementDefinition = {
+  assignedReviewers: string[];
   eligibleReviewers: string[];
+  escalateAfter?: string;
+  fallbackAfter?: string;
+  fallbackTeam?: string;
   identity: string;
   label: string;
   relevantFiles: string[];
   requiredCount: number;
+  resetOnPush?: boolean;
   type: "and" | "or";
+  warnAfter?: string;
 };
 
 export type RebuildReviewStateInput = {
   definitions: ReviewRequirementDefinition[];
   headSha: string;
+  now?: string;
   previousState?: ClearanceState;
 };
 
@@ -32,6 +39,7 @@ export type ScopedInvalidationInput = {
   changedFiles: string[];
   definitions: ReviewRequirementDefinition[];
   headSha: string;
+  now?: string;
 };
 
 export function rebuildReviewState(input: RebuildReviewStateInput): ClearanceState {
@@ -45,6 +53,10 @@ export function rebuildReviewState(input: RebuildReviewStateInput): ClearanceSta
           approval.headSha === input.headSha,
       ),
       input.headSha,
+      previousState.requirements.find(
+        (requirement) => requirement.identity === definition.identity,
+      ),
+      input.now,
     ),
   );
   const requirementIdentities = new Set(input.definitions.map((definition) => definition.identity));
@@ -124,7 +136,13 @@ export function invalidateStaleApprovals(
       (approval) => approval.requirementIdentity === definition.identity,
     );
 
-    return buildRequirementState(definition, approvals, getApprovedHeadSha(approvals));
+    return buildRequirementState(
+      definition,
+      approvals,
+      getApprovedHeadSha(approvals),
+      state.requirements.find((requirement) => requirement.identity === definition.identity),
+      input.now,
+    );
   });
   const requirementIdentities = new Set(input.definitions.map((definition) => definition.identity));
 
@@ -142,6 +160,8 @@ function buildRequirementState(
   definition: ReviewRequirementDefinition,
   approvals: ApprovalRecord[],
   approvedHeadSha: string | undefined,
+  previousRequirement: ClearanceStateRequirement | undefined,
+  now: string | undefined,
 ): ClearanceStateRequirement {
   const approvedBy = approvals
     .filter((approval) => definition.eligibleReviewers.includes(approval.reviewer))
@@ -152,12 +172,21 @@ function buildRequirementState(
   return {
     approvedBy,
     approvedHeadSha: status === "approved" ? approvedHeadSha : undefined,
+    assignedReviewers: definition.assignedReviewers,
+    eligibleReviewers: definition.eligibleReviewers,
+    escalateAfter: definition.escalateAfter,
+    fallbackAfter: definition.fallbackAfter,
+    fallbackTeam: definition.fallbackTeam,
     identity: definition.identity,
     label: definition.label,
+    pendingSince: previousRequirement?.pendingSince ?? now,
     relevantFiles: definition.relevantFiles,
     requiredCount: definition.requiredCount,
+    resetOnPush: definition.resetOnPush,
     status,
     type: definition.type,
+    updatedAt: now ?? previousRequirement?.updatedAt,
+    warnAfter: definition.warnAfter,
   };
 }
 

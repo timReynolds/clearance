@@ -40,10 +40,20 @@ require = [{ from = "@org/platform", count = 1 }]
     expect(result.state.requirements).toEqual([
       expect.objectContaining({
         approvedBy: [],
+        assignedReviewers: ["alice"],
+        eligibleReviewers: ["alice"],
         identity: "and:.:@org/platform:1",
+        pendingSince: "2026-05-17T12:00:00.000Z",
         relevantFiles: ["src/index.ts"],
         status: "pending",
       }),
+    ]);
+    expect(result.state.assignments).toEqual([
+      {
+        assignedAt: "2026-05-17T12:00:00.000Z",
+        requirementIdentity: "and:.:@org/platform:1",
+        reviewers: ["alice"],
+      },
     ]);
     expect(dependencies.upsertComment).toHaveBeenCalledWith(
       expect.objectContaining({ pullNumber: 42 }),
@@ -51,6 +61,124 @@ require = [{ from = "@org/platform", count = 1 }]
     );
     expect(dependencies.setStatuses).toHaveBeenCalledWith(input(), result.checks);
     expect(dependencies.requestReviewers).toHaveBeenCalledWith(input(), ["alice"]);
+  });
+
+  it("uses reviewer signals before assigning reviewers", async () => {
+    const dependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      identityResolution: identityResolution({
+        members: ["alice", "bob"],
+      }),
+      ownershipTree: ownershipTree(`
+[[rule]]
+paths = ["src/**"]
+require = [{ from = "@org/platform", count = 1 }]
+`),
+    });
+    dependencies.listReviewerSignals = vi.fn<
+      PullRequestWorkflowDependencies["listReviewerSignals"]
+    >(async () => [
+      {
+        blameCoverage: 0.1,
+        currentLoad: 5,
+        login: "alice",
+        reviewHistory: 0.1,
+        roundRobinRank: 1,
+      },
+      {
+        blameCoverage: 1,
+        currentLoad: 0,
+        login: "bob",
+        reviewHistory: 1,
+        roundRobinRank: 0,
+      },
+    ]);
+
+    const result = await processPullRequestChange(input(), dependencies);
+
+    expect(dependencies.listReviewerSignals).toHaveBeenCalledWith(
+      input(),
+      ["alice", "bob"],
+      ["src/index.ts"],
+    );
+    expect(result.requestedReviewers).toEqual(["bob"]);
+  });
+
+  it("requests reviewers only for newly introduced requirements", async () => {
+    const dependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      existingComment: renderClearanceComment({
+        ...createEmptyClearanceState(),
+        assignments: [
+          {
+            assignedAt: "2026-05-17T10:00:00.000Z",
+            requirementIdentity: "and:.:@org/platform:1",
+            reviewers: ["alice"],
+          },
+        ],
+      }),
+      identityResolution: identityResolution(),
+      ownershipTree: ownershipTree(`
+[[rule]]
+paths = ["src/**"]
+require = [{ from = "@org/platform", count = 1 }]
+`),
+    });
+
+    const result = await processPullRequestChange(input(), dependencies);
+
+    expect(result.requestedReviewers).toEqual([]);
+    expect(result.state.assignments).toEqual([
+      {
+        assignedAt: "2026-05-17T10:00:00.000Z",
+        requirementIdentity: "and:.:@org/platform:1",
+        reviewers: ["alice"],
+      },
+    ]);
+    expect(dependencies.requestReviewers).toHaveBeenCalledWith(input(), []);
+  });
+
+  it("sends new notifications once and records them in sticky state", async () => {
+    const dependencies = createDependencies({
+      changedFiles: ["docs/readme.md"],
+      identityResolution: identityResolution(),
+      ownershipTree: ownershipTree(`
+[[notify]]
+paths = ["docs/**"]
+teams = ["@org/docs"]
+users = ["@alice"]
+`),
+    });
+
+    const result = await processPullRequestChange(input(), dependencies);
+
+    expect(result.state.notificationsSent).toEqual(["notify:.:teams=@org/docs:users=@alice"]);
+    expect(dependencies.sendNotifications).toHaveBeenCalledWith(input(), [
+      expect.objectContaining({
+        identity: "notify:.:teams=@org/docs:users=@alice",
+        teams: ["@org/docs"],
+        users: ["@alice"],
+      }),
+    ]);
+
+    const repeatedDependencies = createDependencies({
+      changedFiles: ["docs/readme.md"],
+      existingComment: dependencies.upsertedBody,
+      identityResolution: identityResolution(),
+      ownershipTree: ownershipTree(`
+[[notify]]
+paths = ["docs/**"]
+teams = ["@org/docs"]
+users = ["@alice"]
+`),
+    });
+
+    const repeatedResult = await processPullRequestChange(input(), repeatedDependencies);
+
+    expect(repeatedResult.state.notificationsSent).toEqual([
+      "notify:.:teams=@org/docs:users=@alice",
+    ]);
+    expect(repeatedDependencies.sendNotifications).toHaveBeenCalledWith(input(), []);
   });
 
   it("records submitted approvals and updates review checks", async () => {
@@ -351,6 +479,9 @@ function createDependencies(options: {
     listChangedFiles: vi.fn<PullRequestWorkflowDependencies["listChangedFiles"]>(
       async () => options.changedFiles,
     ),
+    listReviewerSignals: vi.fn<PullRequestWorkflowDependencies["listReviewerSignals"]>(
+      async () => [],
+    ),
     loadOwnershipTree: vi.fn<PullRequestWorkflowDependencies["loadOwnershipTree"]>(
       async () => options.ownershipTree,
     ),
@@ -358,6 +489,7 @@ function createDependencies(options: {
     resolveIdentities: vi.fn<PullRequestWorkflowDependencies["resolveIdentities"]>(
       async () => options.identityResolution,
     ),
+    sendNotifications: vi.fn<PullRequestWorkflowDependencies["sendNotifications"]>(async () => {}),
     setStatuses: vi.fn<PullRequestWorkflowDependencies["setStatuses"]>(async () => {}),
     upsertComment: vi.fn<PullRequestWorkflowDependencies["upsertComment"]>(async (_input, body) => {
       dependencies.upsertedBody = body;
@@ -389,17 +521,17 @@ function ownershipTree(source: string): OwnershipTree {
   };
 }
 
-function identityResolution(): GithubIdentityResolution {
+function identityResolution(options: { members?: string[] } = {}): GithubIdentityResolution {
+  const members = options.members ?? ["alice"];
+
   return {
     candidateReviewersByTeam: new Map([
       [
         "@org/platform",
-        [
-          {
-            id: 1,
-            login: "alice",
-          },
-        ],
+        members.map((login, index) => ({
+          id: index + 1,
+          login,
+        })),
       ],
     ]),
     diagnostics: [],
@@ -409,12 +541,10 @@ function identityResolution(): GithubIdentityResolution {
         {
           actor: "@org/platform",
           id: 1,
-          members: [
-            {
-              id: 1,
-              login: "alice",
-            },
-          ],
+          members: members.map((login, index) => ({
+            id: index + 1,
+            login,
+          })),
           name: "Platform",
           org: "org",
           slug: "platform",

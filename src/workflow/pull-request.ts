@@ -12,13 +12,19 @@ import {
 } from "../checks/index.js";
 import { evaluateOverride } from "../override/index.js";
 import type { OwnersDiagnostic, OwnershipTree } from "../owners/index.js";
-import { resolveOwnership, type OwnershipResolution } from "../resolution/index.js";
+import {
+  resolveOwnership,
+  type NotificationRecord,
+  type OwnershipResolution,
+  type RequirementTrigger,
+} from "../resolution/index.js";
 import {
   invalidateStaleApprovals,
   parseClearanceState,
   rebuildReviewState,
   recordSubmittedReview,
   renderClearanceComment,
+  type AssignmentRecord,
   type ClearanceState,
   type ReviewRequirementDefinition,
 } from "../state/index.js";
@@ -44,16 +50,28 @@ export type SubmittedReviewWorkflowInput = PullRequestWorkflowInput & {
 export type PullRequestWorkflowDependencies = {
   findStickyComment(input: PullRequestWorkflowInput): Promise<{ body?: string } | undefined>;
   listChangedFiles(input: PullRequestWorkflowInput): Promise<string[]>;
+  listReviewerSignals(
+    input: PullRequestWorkflowInput,
+    reviewers: string[],
+    changedFiles: string[],
+  ): Promise<ReviewerSignal[]>;
   loadOwnershipTree(input: PullRequestWorkflowInput): Promise<OwnershipTree>;
   requestReviewers(input: PullRequestWorkflowInput, reviewers: string[]): Promise<void>;
   resolveIdentities(tree: OwnershipTree): Promise<GithubIdentityResolution>;
+  sendNotifications(
+    input: PullRequestWorkflowInput,
+    notifications: NotificationRecord[],
+  ): Promise<void>;
   setStatuses(input: PullRequestWorkflowInput, decisions: CheckDecision[]): Promise<void>;
   upsertComment(input: PullRequestWorkflowInput, body: string): Promise<void>;
 };
 
+export type ReviewerSignal = Pick<ReviewerCandidate, "login"> &
+  Partial<Omit<ReviewerCandidate, "id" | "login" | "unavailable">>;
+
 export type WorkflowSideEffectFailure = {
   message: string;
-  operation: "request-reviewers" | "set-statuses" | "upsert-comment";
+  operation: "request-reviewers" | "send-notifications" | "set-statuses" | "upsert-comment";
 };
 
 export type PullRequestWorkflowResult = {
@@ -91,15 +109,23 @@ export async function processPullRequestChange(
       ? rebuildReviewState({
           definitions: context.definitions,
           headSha: input.headSha,
+          now: input.now,
           previousState,
         })
       : invalidateStaleApprovals(previousState, {
           changedFiles: input.changedFilesSinceLastApproval,
           definitions: context.definitions,
           headSha: input.headSha,
+          now: input.now,
         });
+  const assignmentRecords = buildAssignmentRecords(
+    baseState.assignments,
+    context.reviewerAssignments.assignments,
+    input.now,
+  );
   const state = {
     ...baseState,
+    assignments: assignmentRecords,
     warnings: [
       ...context.configDiagnostics.map((diagnostic) => ({
         message: `${diagnostic.filePath} ${diagnostic.schemaPath}: ${diagnostic.message}`,
@@ -120,14 +146,28 @@ export async function processPullRequestChange(
         }
       : state;
   const checks = createWorkflowChecks(context, finalState, override.active === true);
+  const pendingNotifications =
+    context.configValid && override.active !== true
+      ? getPendingNotifications(baseState, context.ownershipResolution.notifications)
+      : [];
   const requestedReviewers =
     context.configValid && override.active !== true
-      ? context.reviewerAssignments.assignments.flatMap((assignment) => assignment.reviewers)
+      ? getNewAssignmentReviewers(baseState.assignments, assignmentRecords)
       : [];
+  const finalStateWithNotifications = {
+    ...finalState,
+    notificationsSent: [
+      ...new Set([
+        ...finalState.notificationsSent,
+        ...pendingNotifications.map((notification) => notification.identity),
+      ]),
+    ].toSorted(compareStrings),
+  };
 
   const sideEffectFailures = await runWorkflowSideEffects([
     {
-      execute: () => dependencies.upsertComment(input, renderClearanceComment(finalState)),
+      execute: () =>
+        dependencies.upsertComment(input, renderClearanceComment(finalStateWithNotifications)),
       operation: "upsert-comment",
     },
     {
@@ -138,6 +178,10 @@ export async function processPullRequestChange(
       execute: () => dependencies.requestReviewers(input, requestedReviewers),
       operation: "request-reviewers",
     },
+    {
+      execute: () => dependencies.sendNotifications(input, pendingNotifications),
+      operation: "send-notifications",
+    },
   ]);
 
   return {
@@ -145,7 +189,7 @@ export async function processPullRequestChange(
     checks,
     sideEffectFailures,
     requestedReviewers,
-    state: finalState,
+    state: finalStateWithNotifications,
   };
 }
 
@@ -201,7 +245,12 @@ async function buildWorkflowContext(
   const identityResolution = await dependencies.resolveIdentities(ownershipTree);
   const configDiagnostics = [...ownershipTree.diagnostics, ...identityResolution.diagnostics];
   const configValid = configDiagnostics.every((diagnostic) => diagnostic.severity !== "error");
-  const candidatesByActor = buildCandidatesByActor(identityResolution);
+  const reviewerSignals = await dependencies.listReviewerSignals(
+    input,
+    getCandidateLoginsFromIdentityResolution(identityResolution),
+    changedFiles,
+  );
+  const candidatesByActor = buildCandidatesByActor(identityResolution, reviewerSignals);
   const assignmentRequirements = buildAssignmentRequirements(ownershipResolution);
   const reviewerAssignments = assignReviewers({
     author: input.author,
@@ -213,6 +262,7 @@ async function buildWorkflowContext(
     assignmentRequirements,
     candidatesByActor,
     reviewerAssignments.assignments,
+    ownershipTree,
   );
   const hardErrors = buildHardErrors(configDiagnostics, assignmentRequirements, candidatesByActor);
 
@@ -233,24 +283,53 @@ async function buildWorkflowContext(
 
 function buildCandidatesByActor(
   identityResolution: GithubIdentityResolution,
+  reviewerSignals: ReviewerSignal[],
 ): Map<string, ReviewerCandidate[]> {
   const candidatesByActor = new Map<string, ReviewerCandidate[]>();
+  const signalsByLogin = new Map(reviewerSignals.map((signal) => [signal.login, signal]));
 
   for (const [actor, user] of identityResolution.users) {
-    candidatesByActor.set(actor, [{ id: user.id, login: user.login }]);
+    candidatesByActor.set(actor, [buildReviewerCandidate(user.login, user.id, signalsByLogin)]);
   }
 
   for (const [actor, team] of identityResolution.teams) {
     candidatesByActor.set(
       actor,
-      team.members.map((member) => ({
-        id: member.id,
-        login: member.login,
-      })),
+      team.members.map((member) => buildReviewerCandidate(member.login, member.id, signalsByLogin)),
     );
   }
 
   return candidatesByActor;
+}
+
+function buildReviewerCandidate(
+  login: string,
+  id: number | undefined,
+  signalsByLogin: Map<string, ReviewerSignal>,
+): ReviewerCandidate {
+  const signal = signalsByLogin.get(login);
+
+  return {
+    blameCoverage: signal?.blameCoverage,
+    currentLoad: signal?.currentLoad,
+    id,
+    login,
+    reviewHistory: signal?.reviewHistory,
+    roundRobinRank: signal?.roundRobinRank,
+  };
+}
+
+function getCandidateLoginsFromIdentityResolution(
+  identityResolution: GithubIdentityResolution,
+): string[] {
+  return [
+    ...new Set([
+      ...[...identityResolution.users.values()].map((user) => user.login),
+      ...[...identityResolution.teams.values()].flatMap((team) =>
+        team.members.map((member) => member.login),
+      ),
+    ]),
+  ].toSorted(compareStrings);
 }
 
 function buildAssignmentRequirements(resolution: OwnershipResolution): AssignmentRequirement[] {
@@ -278,14 +357,22 @@ function buildReviewDefinitions(
   assignmentRequirements: AssignmentRequirement[],
   candidatesByActor: Map<string, ReviewerCandidate[]>,
   reviewerAssignments: ReviewerAssignment[],
+  ownershipTree: OwnershipTree,
 ): ReviewRequirementDefinition[] {
   return assignmentRequirements.map((requirement) => {
+    const selectedAssignment = reviewerAssignments.find(
+      (assignment) => assignment.requirementIdentity === requirement.identity,
+    );
+
     if (requirement.type === "and") {
       const resolvedRequirement = resolution.andRequirements.find(
         (andRequirement) => andRequirement.identity === requirement.identity,
       );
+      const policy = getEscalationPolicy(resolvedRequirement?.triggers ?? [], ownershipTree);
 
       return {
+        ...policy,
+        assignedReviewers: selectedAssignment?.reviewers ?? [],
         eligibleReviewers: getCandidateLogins(candidatesByActor, requirement.from),
         identity: requirement.identity,
         label: `${requirement.from} approval`,
@@ -295,17 +382,17 @@ function buildReviewDefinitions(
       };
     }
 
-    const selectedAssignment = reviewerAssignments.find(
-      (assignment) => assignment.requirementIdentity === requirement.identity,
-    );
     const selectedOption = requirement.options.find(
       (option) => option.from === selectedAssignment?.actor,
     );
     const resolvedRequirement = resolution.orRequirements.find(
       (orRequirement) => orRequirement.identity === requirement.identity,
     );
+    const policy = getEscalationPolicy(resolvedRequirement?.triggers ?? [], ownershipTree);
 
     return {
+      ...policy,
+      assignedReviewers: selectedAssignment?.reviewers ?? [],
       eligibleReviewers:
         selectedOption === undefined
           ? []
@@ -317,6 +404,31 @@ function buildReviewDefinitions(
       type: requirement.type,
     };
   });
+}
+
+function getEscalationPolicy(
+  triggers: RequirementTrigger[],
+  ownershipTree: OwnershipTree,
+): Pick<
+  ReviewRequirementDefinition,
+  "escalateAfter" | "fallbackAfter" | "fallbackTeam" | "resetOnPush" | "warnAfter"
+> {
+  for (const trigger of triggers) {
+    const ownershipFile = ownershipTree.files.find((file) => file.path === trigger.ownersPath);
+    const config = ownershipFile?.config;
+    const policy = config?.rule[trigger.ruleIndex]?.escalation ?? config?.escalation;
+    if (policy !== undefined) {
+      return {
+        escalateAfter: policy.escalate_after,
+        fallbackAfter: policy.fallback_after,
+        fallbackTeam: policy.fallback_team,
+        resetOnPush: policy.reset_on_push,
+        warnAfter: policy.warn_after,
+      };
+    }
+  }
+
+  return {};
 }
 
 function getCandidateLogins(
@@ -355,6 +467,52 @@ function buildHardErrors(
   });
 
   return [...diagnosticErrors, ...assignmentErrors];
+}
+
+function buildAssignmentRecords(
+  existingAssignments: AssignmentRecord[],
+  reviewerAssignments: ReviewerAssignment[],
+  now: string,
+): AssignmentRecord[] {
+  return reviewerAssignments
+    .filter((assignment) => assignment.reviewers.length > 0)
+    .map((assignment) => {
+      const existingAssignment = existingAssignments.find(
+        (record) => record.requirementIdentity === assignment.requirementIdentity,
+      );
+
+      return {
+        assignedAt: existingAssignment?.assignedAt ?? now,
+        requirementIdentity: assignment.requirementIdentity,
+        reviewers: assignment.reviewers.toSorted(compareStrings),
+      };
+    })
+    .toSorted((left, right) => compareStrings(left.requirementIdentity, right.requirementIdentity));
+}
+
+function getNewAssignmentReviewers(
+  existingAssignments: AssignmentRecord[],
+  assignmentRecords: AssignmentRecord[],
+): string[] {
+  const existingRequirementIdentities = new Set(
+    existingAssignments.map((assignment) => assignment.requirementIdentity),
+  );
+
+  return [
+    ...new Set(
+      assignmentRecords
+        .filter((assignment) => !existingRequirementIdentities.has(assignment.requirementIdentity))
+        .flatMap((assignment) => assignment.reviewers),
+    ),
+  ].toSorted(compareStrings);
+}
+
+function getPendingNotifications(
+  state: ClearanceState,
+  notifications: NotificationRecord[],
+): NotificationRecord[] {
+  const sentNotifications = new Set(state.notificationsSent);
+  return notifications.filter((notification) => !sentNotifications.has(notification.identity));
 }
 
 function evaluateWorkflowOverride(input: PullRequestWorkflowInput, context: WorkflowContext) {

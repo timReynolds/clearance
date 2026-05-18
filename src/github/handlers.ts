@@ -4,17 +4,21 @@ import {
   findStickyClearanceComment,
   listChangedFilesBetweenCommits,
   listChangedPullRequestFiles,
+  listPullRequestReviewerSignals,
   loadOwnershipTree,
   requestPullRequestReviewers,
   resolveGithubIdentities,
+  sendPullRequestNotifications,
   setCommitStatuses,
   upsertStickyClearanceComment,
   type CommitCompareOctokit,
   type GithubIdentityOctokit,
   type GithubStatusesOctokit,
+  type NotificationCommentOctokit,
   type OwnershipTreeOctokit,
   type PullRequestFilesOctokit,
   type PullRequestReviewersOctokit,
+  type ReviewerSignalsOctokit,
   type StickyCommentOctokit,
 } from "./index.js";
 import {
@@ -29,9 +33,11 @@ const pullRequestActions = new Set(["opened", "reopened", "synchronize", "ready_
 export type GithubWorkflowOctokit = GithubIdentityOctokit &
   CommitCompareOctokit &
   GithubStatusesOctokit &
+  NotificationCommentOctokit &
   OwnershipTreeOctokit &
   PullRequestFilesOctokit &
   PullRequestReviewersOctokit &
+  ReviewerSignalsOctokit &
   StickyCommentOctokit;
 
 export type GithubInstallationClientFactory = {
@@ -204,6 +210,14 @@ function buildWorkflowDependencies(
         pullNumber: input.pullNumber,
         repo: input.repo,
       }),
+    listReviewerSignals: async (input, reviewers, changedFiles) =>
+      listPullRequestReviewerSignals(octokit, {
+        changedFiles,
+        owner: input.owner,
+        pullNumber: input.pullNumber,
+        repo: input.repo,
+        reviewers,
+      }),
     loadOwnershipTree: async (input) =>
       loadOwnershipTree(octokit, {
         owner: input.owner,
@@ -221,6 +235,16 @@ function buildWorkflowDependencies(
         reviewers,
       ),
     resolveIdentities: async (tree) => resolveGithubIdentities(octokit, tree.files),
+    sendNotifications: async (input, notifications) =>
+      sendPullRequestNotifications(
+        octokit,
+        {
+          owner: input.owner,
+          pullNumber: input.pullNumber,
+          repo: input.repo,
+        },
+        notifications,
+      ),
     setStatuses: async (input, decisions) =>
       setCommitStatuses(
         octokit,

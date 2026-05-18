@@ -296,6 +296,7 @@ describe("review tracking", () => {
 function definitions(): ReviewRequirementDefinition[] {
   return [
     {
+      assignedReviewers: ["alice"],
       eligibleReviewers: ["alice", "bob"],
       identity: "and:platform",
       label: "Platform",
@@ -304,6 +305,7 @@ function definitions(): ReviewRequirementDefinition[] {
       type: "and",
     },
     {
+      assignedReviewers: ["carol"],
       eligibleReviewers: ["carol"],
       identity: "and:security",
       label: "Security",

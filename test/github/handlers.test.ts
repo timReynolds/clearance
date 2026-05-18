@@ -14,12 +14,15 @@ type GetTree = GithubWorkflowOctokit["rest"]["git"]["getTree"];
 type GetTeam = GithubWorkflowOctokit["rest"]["teams"]["getByName"];
 type ListMembers = GithubWorkflowOctokit["rest"]["teams"]["listMembersInOrg"];
 type ListFiles = GithubWorkflowOctokit["rest"]["pulls"]["listFiles"];
+type ListReviews = GithubWorkflowOctokit["rest"]["pulls"]["listReviews"];
 type ListComments = GithubWorkflowOctokit["rest"]["issues"]["listComments"];
 type CreateComment = GithubWorkflowOctokit["rest"]["issues"]["createComment"];
 type CreateCommitStatus = GithubWorkflowOctokit["rest"]["repos"]["createCommitStatus"];
+type ListCommits = GithubWorkflowOctokit["rest"]["repos"]["listCommits"];
 type RequestReviewers = GithubWorkflowOctokit["rest"]["pulls"]["requestReviewers"];
 type CompareCommits = GithubWorkflowOctokit["rest"]["repos"]["compareCommitsWithBasehead"];
 type GetUser = GithubWorkflowOctokit["rest"]["users"]["getByUsername"];
+type SearchIssues = GithubWorkflowOctokit["rest"]["search"]["issuesAndPullRequests"];
 type UpdateComment = GithubWorkflowOctokit["rest"]["issues"]["updateComment"];
 
 describe("registerGithubHandlers", () => {
@@ -232,6 +235,9 @@ require = [{ from = "@org/platform", count = 1 }]
         listFiles: vi.fn<ListFiles>(async () => ({
           data: [{ filename: "src/index.ts" }],
         })),
+        listReviews: vi.fn<ListReviews>(async () => ({
+          data: [],
+        })),
         requestReviewers: vi.fn<RequestReviewers>(async () => ({})),
       },
       repos: {
@@ -241,6 +247,16 @@ require = [{ from = "@org/platform", count = 1 }]
           },
         })),
         createCommitStatus: vi.fn<CreateCommitStatus>(async () => ({})),
+        listCommits: vi.fn<ListCommits>(async () => ({
+          data: [],
+        })),
+      },
+      search: {
+        issuesAndPullRequests: vi.fn<SearchIssues>(async () => ({
+          data: {
+            total_count: 0,
+          },
+        })),
       },
       teams: {
         getByName: vi.fn<GetTeam>(async () => ({

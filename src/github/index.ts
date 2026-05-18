@@ -39,5 +39,12 @@ export {
   type PullRequestReviewersOctokit,
   type PullRequestReviewersRef,
 } from "./reviewers.js";
+export { sendPullRequestNotifications, type NotificationCommentOctokit } from "./notifications.js";
+export {
+  listPullRequestReviewerSignals,
+  type GithubReviewerSignal,
+  type ReviewerSignalsOctokit,
+  type ReviewerSignalsRef,
+} from "./reviewer-signals.js";
 export { findStickyClearanceComment, type StickyClearanceComment } from "./sticky-comment.js";
 export { ownersFileName, type OwnershipFile, type OwnershipTree } from "../owners/index.js";

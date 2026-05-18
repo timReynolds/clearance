@@ -4,12 +4,21 @@ export const clearanceStateBlockEnd = "-->";
 export type ClearanceStateRequirement = {
   approvedBy: string[];
   approvedHeadSha?: string;
+  assignedReviewers?: string[];
+  eligibleReviewers?: string[];
+  escalateAfter?: string;
+  fallbackAfter?: string;
+  fallbackTeam?: string;
   identity: string;
   label: string;
+  pendingSince?: string;
   relevantFiles?: string[];
   requiredCount: number;
+  resetOnPush?: boolean;
   status: "approved" | "pending";
   type: "and" | "or";
+  updatedAt?: string;
+  warnAfter?: string;
 };
 
 export type AssignmentRecord = {
