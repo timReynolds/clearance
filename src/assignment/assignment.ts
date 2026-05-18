@@ -80,6 +80,17 @@ function assignRequirement(
     });
   }
 
+  if (requirement.options.length === 0) {
+    return {
+      actor: "",
+      requirementIdentity: requirement.identity,
+      reviewers: [],
+      scores: [],
+      type: "or",
+      warnings: [`Requirement ${requirement.identity} has no reviewer options`],
+    };
+  }
+
   const selectedOption = chooseOrOption(requirement.options, candidatesByActor, author);
   return assignActorRequirement({
     actor: selectedOption.from,

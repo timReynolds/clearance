@@ -97,6 +97,46 @@ describe("evaluateEscalations", () => {
     expect(actions).toEqual([]);
   });
 
+  it("supports every duration unit and ignores malformed durations", () => {
+    const actions = evaluateEscalations({
+      now: "2026-05-17T12:00:00.000Z",
+      requirements: [
+        requirement({
+          identity: "seconds",
+          pendingSince: "2026-05-17T11:59:29.000Z",
+          warnAfter: "30s",
+        }),
+        requirement({
+          identity: "minutes",
+          pendingSince: "2026-05-17T11:57:00.000Z",
+          warnAfter: "2m",
+        }),
+        requirement({
+          identity: "days",
+          pendingSince: "2026-05-16T11:59:59.000Z",
+          warnAfter: "1d",
+        }),
+        requirement({
+          identity: "weeks",
+          pendingSince: "2026-05-10T12:00:00.000Z",
+          warnAfter: "1w",
+        }),
+        requirement({
+          identity: "bad-duration",
+          pendingSince: "2026-05-10T12:00:00.000Z",
+          warnAfter: "soon",
+        }),
+      ],
+    });
+
+    expect(actions.map((action) => action.requirementIdentity)).toEqual([
+      "seconds",
+      "minutes",
+      "days",
+      "weeks",
+    ]);
+  });
+
   it("ignores approved requirements and skips add-reviewer when no extra reviewer exists", () => {
     const actions = evaluateEscalations({
       now: "2026-05-17T12:00:00.000Z",

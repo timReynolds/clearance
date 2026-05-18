@@ -137,4 +137,70 @@ describe("assignReviewers", () => {
       }),
     );
   });
+
+  it("clamps score inputs and uses login tie-breaks deterministically", () => {
+    const result = assignReviewers({
+      author: "author",
+      candidatesByActor: {
+        "@org/platform": [
+          {
+            blameCoverage: 2,
+            currentLoad: -10,
+            login: "bob",
+            reviewHistory: 2,
+            roundRobinRank: -1,
+          },
+          {
+            blameCoverage: 2,
+            currentLoad: -10,
+            login: "alice",
+            reviewHistory: 2,
+            roundRobinRank: -1,
+          },
+        ],
+      },
+      requirements: [
+        {
+          count: 2,
+          from: "@org/platform",
+          identity: "and:platform",
+          type: "and",
+        },
+      ],
+    });
+
+    expect(result.assignments[0]?.reviewers).toEqual(["alice", "bob"]);
+    expect(result.assignments[0]?.scores[0]).toEqual(
+      expect.objectContaining({
+        blameScore: 1,
+        currentLoadScore: 1,
+        reviewHistoryScore: 1,
+        roundRobinScore: 1,
+      }),
+    );
+  });
+
+  it("returns a warning for an empty OR requirement instead of throwing", () => {
+    const result = assignReviewers({
+      author: "author",
+      candidatesByActor: {},
+      requirements: [
+        {
+          identity: "or:empty",
+          options: [],
+          type: "or",
+        },
+      ],
+    });
+
+    expect(result.assignments[0]).toEqual({
+      actor: "",
+      requirementIdentity: "or:empty",
+      reviewers: [],
+      scores: [],
+      type: "or",
+      warnings: ["Requirement or:empty has no reviewer options"],
+    });
+    expect(result.warnings).toEqual(["Requirement or:empty has no reviewer options"]);
+  });
 });
