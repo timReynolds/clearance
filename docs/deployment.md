@@ -31,8 +31,9 @@ Subscribe to:
 
 - Pull request
 - Pull request review
+- Issue comment
 
-The server handles `opened`, `reopened`, `ready_for_review`, and `synchronize` pull request actions, plus submitted pull request reviews.
+The server handles `opened`, `reopened`, `ready_for_review`, and `synchronize` pull request actions, submitted pull request reviews, and created issue comments containing `@clearance override` or `@clearance override revoke`.
 
 ## 4. Install the App
 

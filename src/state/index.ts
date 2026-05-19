@@ -17,6 +17,7 @@ export {
   invalidateStaleApprovals,
   rebuildReviewState,
   recordSubmittedReview,
+  type ReviewRequirementApprovalOption,
   type RebuildReviewStateInput,
   type ReviewRequirementDefinition,
   type ScopedInvalidationInput,

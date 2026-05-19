@@ -2,6 +2,11 @@ export const clearanceStateBlockStart = "<!-- clearance-state:v1";
 export const clearanceStateBlockEnd = "-->";
 
 export type ClearanceStateRequirement = {
+  approvalOptions?: Array<{
+    eligibleReviewers: string[];
+    from: string;
+    requiredCount: number;
+  }>;
   approvedBy: string[];
   approvedHeadSha?: string;
   assignedReviewers?: string[];
@@ -56,7 +61,7 @@ export type ClearanceState = {
   override?: {
     actor: string;
     at: string;
-    label: string;
+    commentId?: number;
   };
   requirements: ClearanceStateRequirement[];
   version: 1;
@@ -157,7 +162,7 @@ export function renderClearanceComment(state: ClearanceState): string {
 
 function renderSummary(state: ClearanceState): string {
   if (state.override !== undefined) {
-    return `Review clearance is granted by override label \`${state.override.label}\`.`;
+    return "Review clearance is granted by @clearance override.";
   }
 
   const pending = state.requirements.filter(
@@ -223,7 +228,7 @@ function renderAuditLog(state: ClearanceState): string {
           {
             actor: state.override.actor,
             at: state.override.at,
-            message: `Override activated with label ${state.override.label}`,
+            message: "Override activated by @clearance override command",
             type: "override",
           },
         ]),

@@ -2,7 +2,7 @@
 
 Clearance is a GitHub App that enforces hierarchical `OWNERS.toml` review rules on pull requests.
 
-It loads ownership files from the PR head SHA, resolves changed files to required reviewers, assigns reviewers, stores canonical state in Supabase Postgres when `DATABASE_URL` is configured, renders one sticky PR comment, sets `clearance/config` and `clearance/review` commit statuses, tracks scoped stale approvals, and supports break-glass override labels.
+It loads ownership files from the PR head SHA, resolves changed files to required reviewers, assigns reviewers, stores canonical state in Supabase Postgres when `DATABASE_URL` is configured, renders one sticky PR comment, sets `clearance/config` and `clearance/review` commit statuses, tracks scoped stale approvals, and supports break-glass override comment commands.
 
 ## User Docs
 
@@ -53,7 +53,7 @@ npm run build
 - `src/state`: serializes sticky comment state and tracks review approvals.
 - `src/checks`: decides `clearance/config` and `clearance/review` statuses.
 - `src/escalation`: evaluates pending requirements for warning, escalation, and fallback actions.
-- `src/override`: evaluates break-glass override labels.
+- `src/override`: evaluates break-glass override comment commands.
 - `src/github`: contains Octokit-facing adapters and webhook handlers.
 - `src/workflow`: composes core modules with GitHub edge adapters.
 - `src/db`: contains the Drizzle schema, Supabase/Postgres client, and persistence store.

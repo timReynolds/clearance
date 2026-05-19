@@ -6,30 +6,40 @@ export type TeamMembersByActor = Map<string, string[]> | Record<string, string[]
 export type OverrideInput = {
   actor: string;
   at: string;
+  command: OverrideCommand;
   configValid: boolean;
-  labels: string[];
   ownershipFiles: OwnershipFile[];
   teamMembersByActor: TeamMembersByActor;
 };
 
-export type OverrideEvaluation =
+export type OverrideCommand =
   | {
-      active: true;
-      actor: string;
-      auditEvent: StateEvent;
-      label: string;
-      team: string;
+      commentId?: number;
+      type: "activate";
     }
   | {
-      active: false;
+      commentId?: number;
+      type: "revoke";
+    };
+
+export type OverrideEvaluation =
+  | {
+      actor: string;
+      auditEvent: StateEvent;
+      commentId?: number;
+      team: string;
+      type: "activate" | "revoke";
+    }
+  | {
       reason: string;
+      type: "rejected";
     };
 
 export function evaluateOverride(input: OverrideInput): OverrideEvaluation {
   if (!input.configValid) {
     return {
-      active: false,
       reason: "invalid OWNERS.toml configuration cannot be bypassed by override",
+      type: "rejected",
     };
   }
 
@@ -38,15 +48,8 @@ export function evaluateOverride(input: OverrideInput): OverrideEvaluation {
     .find((override) => override !== undefined);
   if (overrideConfig === undefined) {
     return {
-      active: false,
       reason: "no override is configured",
-    };
-  }
-
-  if (!input.labels.includes(overrideConfig.label)) {
-    return {
-      active: false,
-      reason: `override label ${overrideConfig.label} is not present`,
+      type: "rejected",
     };
   }
 
@@ -56,23 +59,35 @@ export function evaluateOverride(input: OverrideInput): OverrideEvaluation {
   );
   if (authorizedTeam === undefined) {
     return {
-      active: false,
       reason: `actor ${input.actor} is not a member of an override team`,
+      type: "rejected",
     };
   }
 
+  const action = input.command.type === "activate" ? "activated" : "revoked";
   return {
-    active: true,
     actor: input.actor,
     auditEvent: {
       actor: input.actor,
       at: input.at,
-      message: `Override activated with label ${overrideConfig.label}`,
+      message: `Override ${action} by @clearance override command`,
       type: "override",
     },
-    label: overrideConfig.label,
+    commentId: input.command.commentId,
     team: authorizedTeam,
+    type: input.command.type,
   };
+}
+
+export function parseOverrideCommentCommand(body: string): OverrideCommand | undefined {
+  const command = body.trim().match(/^@clearance\s+override(?:\s+(?<action>revoke))?\b/i);
+  if (command === null) {
+    return undefined;
+  }
+
+  return command.groups?.action?.toLowerCase() === "revoke"
+    ? { type: "revoke" }
+    : { type: "activate" };
 }
 
 function normalizeTeamMembers(teamMembersByActor: TeamMembersByActor): Map<string, string[]> {

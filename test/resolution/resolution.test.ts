@@ -144,6 +144,50 @@ users = ["@alice"]
     ]);
   });
 
+  it("resolves multiple require_any groups in one matching rule as independent OR requirements", () => {
+    const result = resolveOwnership({
+      changedFiles: ["src/index.ts"],
+      ownershipFiles: [
+        ownersFile(
+          ".",
+          `
+[[rule]]
+paths = ["src/**"]
+require_any = [
+  [
+    { from = "@org/security", count = 1 },
+    { from = "@org/compliance", count = 1 },
+  ],
+  [
+    { from = "@org/platform", count = 1 },
+    { from = "@org/ml-platform", count = 1 },
+  ],
+]
+`,
+        ),
+      ],
+    });
+
+    expect(result.orRequirements.map((requirement) => requirement.identity)).toEqual([
+      "or:.:@org/compliance:1|@org/security:1",
+      "or:.:@org/ml-platform:1|@org/platform:1",
+    ]);
+    expect(result.orRequirements).toEqual([
+      expect.objectContaining({
+        options: [
+          { count: 1, from: "@org/security" },
+          { count: 1, from: "@org/compliance" },
+        ],
+      }),
+      expect.objectContaining({
+        options: [
+          { count: 1, from: "@org/platform" },
+          { count: 1, from: "@org/ml-platform" },
+        ],
+      }),
+    ]);
+  });
+
   it("deduplicates identical requirements across files and matching rules", () => {
     const result = resolveOwnership({
       changedFiles: ["src/index.ts", "src/lib/util.ts"],

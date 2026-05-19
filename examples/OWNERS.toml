@@ -33,5 +33,3 @@ teams = ["@org/compliance"]
 
 [override]
 teams = ["@org/repo-admins"]
-label = "clearance-override"
-

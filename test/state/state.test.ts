@@ -74,16 +74,14 @@ describe("Clearance state", () => {
       override: {
         actor: "repo-admin",
         at: "2026-05-17T11:00:00.000Z",
-        label: "clearance-override",
+        commentId: 123,
       },
     };
 
     const markdown = renderClearanceComment(state);
 
-    expect(markdown).toContain(
-      "Review clearance is granted by override label `clearance-override`.",
-    );
-    expect(markdown).toContain("Override activated with label clearance-override by `repo-admin`");
+    expect(markdown).toContain("Review clearance is granted by @clearance override.");
+    expect(markdown).toContain("Override activated by @clearance override command by `repo-admin`");
   });
 });
 

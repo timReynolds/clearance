@@ -180,8 +180,8 @@ function applyOwnershipFile(parameters: {
       addAndRequirement(parameters, requirement, ruleIndex, matchedPatterns, matchedPath);
     }
 
-    if (rule.require_any.length > 0) {
-      addOrRequirement(parameters, rule.require_any, ruleIndex, matchedPatterns, matchedPath);
+    for (const requirements of rule.require_any) {
+      addOrRequirement(parameters, requirements, ruleIndex, matchedPatterns, matchedPath);
     }
   }
 

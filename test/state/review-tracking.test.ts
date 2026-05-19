@@ -129,6 +129,67 @@ describe("review tracking", () => {
     );
   });
 
+  it("evaluates OR approval options independently", () => {
+    const orDefinitions: ReviewRequirementDefinition[] = [
+      {
+        approvalOptions: [
+          {
+            eligibleReviewers: ["security-reviewer"],
+            from: "@org/security",
+            requiredCount: 1,
+          },
+          {
+            eligibleReviewers: ["compliance-a", "compliance-b"],
+            from: "@org/compliance",
+            requiredCount: 2,
+          },
+        ],
+        assignedReviewers: ["security-reviewer"],
+        eligibleReviewers: ["compliance-a", "compliance-b", "security-reviewer"],
+        identity: "or:security-or-compliance",
+        label: "@org/security or @org/compliance",
+        relevantFiles: ["src/index.ts"],
+        requiredCount: 1,
+        type: "or",
+      },
+    ];
+    const initialState = rebuildReviewState({
+      definitions: orDefinitions,
+      headSha: "head-1",
+    });
+
+    const partiallyApproved = recordSubmittedReview(initialState, {
+      approvedAt: "2026-05-17T10:00:00.000Z",
+      definitions: orDefinitions,
+      headSha: "head-1",
+      reviewer: "compliance-a",
+      state: "approved",
+    });
+
+    expect(partiallyApproved.requirements[0]).toEqual(
+      expect.objectContaining({
+        approvedBy: ["compliance-a"],
+        status: "pending",
+      }),
+    );
+
+    const approved = recordSubmittedReview(partiallyApproved, {
+      approvedAt: "2026-05-17T10:05:00.000Z",
+      definitions: orDefinitions,
+      headSha: "head-1",
+      reviewer: "compliance-b",
+      state: "approved",
+    });
+
+    expect(approved.requirements[0]).toEqual(
+      expect.objectContaining({
+        approvedBy: ["compliance-a", "compliance-b"],
+        approvedHeadSha: "head-1",
+        status: "approved",
+      }),
+    );
+  });
+
   it("replaces an earlier approval from the same reviewer and requirement", () => {
     const initialState = rebuildReviewState({
       definitions: definitions(),

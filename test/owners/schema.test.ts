@@ -31,7 +31,6 @@ teams = ["@org/compliance"]
 
 [override]
 teams = ["@org/repo-admins"]
-label = "clearance-override"
 `,
       { filePath: "services/api/OWNERS.toml" },
     );
@@ -45,7 +44,12 @@ label = "clearance-override"
     expect(result.config.inherit).toBe(true);
     expect(result.config.rule).toHaveLength(1);
     expect(result.config.rule[0]?.require).toEqual([{ from: "@org/platform-eng", count: 1 }]);
-    expect(result.config.rule[0]?.require_any).toHaveLength(2);
+    expect(result.config.rule[0]?.require_any).toEqual([
+      [
+        { from: "@org/security-eng", count: 1 },
+        { from: "@org/compliance", count: 1 },
+      ],
+    ]);
     expect(result.config.notify[0]?.teams).toEqual(["@org/compliance"]);
   });
 
@@ -73,6 +77,34 @@ paths = ["docs/**"]
     expect(result.config.rule[0]?.require_any).toEqual([]);
     expect(result.config.notify[0]?.teams).toEqual([]);
     expect(result.config.notify[0]?.users).toEqual([]);
+  });
+
+  it("supports multiple independent require_any groups in one rule", () => {
+    const result = expectParseSuccess(`
+[[rule]]
+paths = ["**"]
+require_any = [
+  [
+    { from = "@org/security-eng", count = 1 },
+    { from = "@org/compliance", count = 1 },
+  ],
+  [
+    { from = "@org/platform", count = 1 },
+    { from = "@org/ml-platform", count = 1 },
+  ],
+]
+`);
+
+    expect(result.config.rule[0]?.require_any).toEqual([
+      [
+        { from: "@org/security-eng", count: 1 },
+        { from: "@org/compliance", count: 1 },
+      ],
+      [
+        { from: "@org/platform", count: 1 },
+        { from: "@org/ml-platform", count: 1 },
+      ],
+    ]);
   });
 
   it("parses an empty file with root defaults", () => {
@@ -216,7 +248,6 @@ fallback_team = "@alice"
 
 [override]
 teams = ["@alice"]
-label = "clearance-override"
 `);
 
     expect(result.diagnostics).toEqual(
@@ -391,7 +422,6 @@ require = [{ from = "org/platform-eng", count = 0 }]
 
 [override]
 teams = []
-label = ""
 `);
 
     expect(result.diagnostics.map((diagnostic) => diagnostic.schemaPath)).toEqual([
@@ -400,7 +430,6 @@ label = ""
       "$.rule[0].require[0].from",
       "$.rule[0].require[0].count",
       "$.override.teams",
-      "$.override.label",
     ]);
   });
 });

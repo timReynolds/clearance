@@ -43,7 +43,6 @@ users = ["@alice"]
 
 [override]
 teams = ["@org/repo-admins"]
-label = "clearance-override"
 ```
 
 ## Fields
@@ -75,6 +74,25 @@ Approval requirements for matching files:
 
 Actors can be users such as `@alice` or teams such as `@org/platform-eng`.
 
+For multiple independent OR requirements in the same rule, use nested `require_any` groups:
+
+```toml
+[[rule]]
+paths = ["**"]
+require_any = [
+  [
+    { from = "@org/security-eng", count = 1 },
+    { from = "@org/compliance", count = 1 },
+  ],
+  [
+    { from = "@org/platform", count = 1 },
+    { from = "@org/ml-platform", count = 1 },
+  ],
+]
+```
+
+This requires one approval from security/compliance and one approval from platform/ml-platform.
+
 ### `[[notify]]`
 
 Notification targets for matching files:
@@ -88,7 +106,8 @@ Notification targets for matching files:
 Break-glass override policy:
 
 - `teams`: teams whose members may activate the override.
-- `label`: PR label that activates the override.
+
+An authorized team member can activate an override by commenting `@clearance override` on the pull request. The override remains active until an authorized team member comments `@clearance override revoke`.
 
 An override cannot bypass invalid `OWNERS.toml` configuration.
 

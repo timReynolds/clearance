@@ -361,12 +361,14 @@ function collectConfigActorReferences(filePath: string, config: OwnersConfig): A
       rule.require,
       `$.rule[${ruleIndex}].require`,
     );
-    collectRequirementReferences(
-      filePath,
-      references,
-      rule.require_any,
-      `$.rule[${ruleIndex}].require_any`,
-    );
+    for (const [groupIndex, requirements] of rule.require_any.entries()) {
+      collectRequirementReferences(
+        filePath,
+        references,
+        requirements,
+        getRequireAnySchemaPath(ruleIndex, groupIndex, rule.require_any.length),
+      );
+    }
 
     if (rule.escalation?.fallback_team !== undefined) {
       references.push({
@@ -427,6 +429,18 @@ function collectRequirementReferences(
       schemaPath: `${schemaPath}[${requirementIndex}].from`,
     });
   }
+}
+
+function getRequireAnySchemaPath(
+  ruleIndex: number,
+  groupIndex: number,
+  groupCount: number,
+): string {
+  if (groupCount === 1) {
+    return `$.rule[${ruleIndex}].require_any`;
+  }
+
+  return `$.rule[${ruleIndex}].require_any[${groupIndex}]`;
 }
 
 function parseActor(actor: string): ParsedActor | undefined {

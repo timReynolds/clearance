@@ -10,7 +10,7 @@ import {
   createReviewCheckDecision,
   type CheckDecision,
 } from "../checks/index.js";
-import { evaluateOverride } from "../override/index.js";
+import { evaluateOverride, type OverrideCommand } from "../override/index.js";
 import type { OwnersDiagnostic, OwnershipTree } from "../owners/index.js";
 import {
   resolveOwnership,
@@ -36,6 +36,7 @@ export type PullRequestWorkflowInput = {
   headSha: string;
   labels: string[];
   now: string;
+  overrideCommand?: OverrideCommand;
   owner: string;
   pullNumber: number;
   repo: string;
@@ -133,25 +134,15 @@ export async function processPullRequestChange(
       ...context.reviewerAssignments.warnings.map((message) => ({ message })),
     ],
   };
-  const override = evaluateWorkflowOverride(input, context);
-  const finalState =
-    override.active === true
-      ? {
-          ...state,
-          override: {
-            actor: override.actor,
-            at: input.now,
-            label: override.label,
-          },
-        }
-      : state;
-  const checks = createWorkflowChecks(context, finalState, override.active === true);
+  const overrideResult = applyWorkflowOverride(input, context, state);
+  const finalState = overrideResult.state;
+  const checks = createWorkflowChecks(context, finalState, overrideResult.active);
   const pendingNotifications =
-    context.configValid && override.active !== true
+    context.configValid && overrideResult.active !== true
       ? getPendingNotifications(baseState, context.ownershipResolution.notifications)
       : [];
   const requestedReviewers =
-    context.configValid && override.active !== true
+    context.configValid && overrideResult.active !== true
       ? getNewAssignmentReviewers(baseState.assignments, assignmentRecords)
       : [];
   const finalStateWithNotifications = {
@@ -208,13 +199,18 @@ export async function processSubmittedReview(
     reviewer: input.reviewer,
     state: input.reviewState,
   });
-  const checks = createWorkflowChecks(context, state, state.override !== undefined);
+  const reconciledState = reconcileStoredOverride(context, state);
+  const checks = createWorkflowChecks(
+    context,
+    reconciledState,
+    reconciledState.override !== undefined,
+  );
 
-  await dependencies.saveState?.(input, state);
+  await dependencies.saveState?.(input, reconciledState);
 
   const sideEffectFailures = await runWorkflowSideEffects([
     {
-      execute: () => dependencies.upsertComment(input, renderClearanceComment(state)),
+      execute: () => dependencies.upsertComment(input, renderClearanceComment(reconciledState)),
       operation: "upsert-comment",
     },
     {
@@ -228,7 +224,7 @@ export async function processSubmittedReview(
     checks,
     sideEffectFailures,
     requestedReviewers: [],
-    state,
+    state: reconciledState,
   };
 }
 
@@ -403,14 +399,19 @@ function buildReviewDefinitions(
       (orRequirement) => orRequirement.identity === requirement.identity,
     );
     const policy = getEscalationPolicy(resolvedRequirement?.triggers ?? [], ownershipTree);
+    const approvalOptions = requirement.options.map((option) => ({
+      eligibleReviewers: getCandidateLogins(candidatesByActor, option.from),
+      from: option.from,
+      requiredCount: option.count,
+    }));
 
     return {
       ...policy,
+      approvalOptions,
       assignedReviewers: selectedAssignment?.reviewers ?? [],
-      eligibleReviewers:
-        selectedOption === undefined
-          ? []
-          : getCandidateLogins(candidatesByActor, selectedOption.from),
+      eligibleReviewers: [
+        ...new Set(approvalOptions.flatMap((option) => option.eligibleReviewers)),
+      ].toSorted(compareStrings),
       identity: requirement.identity,
       label: requirement.options.map((option) => option.from).join(" or "),
       relevantFiles: getRelevantFiles(resolvedRequirement?.triggers ?? []),
@@ -529,20 +530,97 @@ function getPendingNotifications(
   return notifications.filter((notification) => !sentNotifications.has(notification.identity));
 }
 
-function evaluateWorkflowOverride(input: PullRequestWorkflowInput, context: WorkflowContext) {
+function applyWorkflowOverride(
+  input: PullRequestWorkflowInput,
+  context: WorkflowContext,
+  state: ClearanceState,
+): { active: boolean; state: ClearanceState } {
+  const reconciledState = reconcileStoredOverride(context, state);
+  if (input.overrideCommand === undefined) {
+    return {
+      active: reconciledState.override !== undefined,
+      state: reconciledState,
+    };
+  }
+
+  const evaluation = evaluateWorkflowOverride(input, context, input.overrideCommand);
+  if (evaluation.type === "activate") {
+    return {
+      active: true,
+      state: {
+        ...reconciledState,
+        override: {
+          actor: evaluation.actor,
+          at: input.now,
+          commentId: evaluation.commentId,
+        },
+      },
+    };
+  }
+
+  if (evaluation.type === "revoke") {
+    return {
+      active: false,
+      state: {
+        ...reconciledState,
+        override: undefined,
+      },
+    };
+  }
+
+  return {
+    active: reconciledState.override !== undefined,
+    state: reconciledState,
+  };
+}
+
+function reconcileStoredOverride(context: WorkflowContext, state: ClearanceState): ClearanceState {
+  if (state.override === undefined) {
+    return state;
+  }
+
+  const evaluation = evaluateWorkflowOverride(
+    {
+      now: state.override.at,
+      sender: state.override.actor,
+    },
+    context,
+    {
+      commentId: state.override.commentId,
+      type: "activate",
+    },
+  );
+
+  return evaluation.type === "activate"
+    ? state
+    : {
+        ...state,
+        override: undefined,
+      };
+}
+
+function evaluateWorkflowOverride(
+  input: Pick<PullRequestWorkflowInput, "now" | "sender">,
+  context: WorkflowContext,
+  command: OverrideCommand,
+) {
   return evaluateOverride({
     actor: input.sender,
     at: input.now,
+    command,
     configValid: context.configValid,
-    labels: input.labels,
     ownershipFiles: context.ownershipTree.files,
-    teamMembersByActor: new Map(
-      [...context.identityResolution.teams.entries()].map(([actor, team]) => [
-        actor,
-        team.members.map((member) => member.login),
-      ]),
-    ),
+    teamMembersByActor: getTeamMembersByActor(context),
   });
+}
+
+function getTeamMembersByActor(context: WorkflowContext): Map<string, string[]> {
+  return new Map(
+    [...context.identityResolution.teams.entries()].map(([actor, team]) => [
+      actor,
+      team.members.map((member) => member.login),
+    ]),
+  );
 }
 
 function createWorkflowChecks(

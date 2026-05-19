@@ -332,6 +332,91 @@ require = [{ from = "@org/platform", count = 1 }]
     ]);
   });
 
+  it("activates and retains authorized comment overrides until revoked", async () => {
+    const owners = `
+[[rule]]
+paths = ["src/**"]
+require = [{ from = "@org/platform", count = 1 }]
+
+[override]
+teams = ["@org/admins"]
+`;
+    const dependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      identityResolution: identityResolution({
+        teams: {
+          "@org/admins": ["admin"],
+          "@org/platform": ["alice"],
+        },
+      }),
+      ownershipTree: ownershipTree(owners),
+    });
+
+    const activated = await processPullRequestChange(
+      {
+        ...input(),
+        overrideCommand: { commentId: 123, type: "activate" },
+        sender: "admin",
+      },
+      dependencies,
+    );
+
+    expect(activated.state.override).toEqual({
+      actor: "admin",
+      at: "2026-05-17T12:00:00.000Z",
+      commentId: 123,
+    });
+    expect(activated.checks[1]).toEqual({
+      context: "clearance/review",
+      description: "Review clearance granted by authorized override",
+      state: "success",
+    });
+    expect(activated.requestedReviewers).toEqual([]);
+
+    const retainedDependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      existingComment: dependencies.upsertedBody,
+      identityResolution: identityResolution({
+        teams: {
+          "@org/admins": ["admin"],
+          "@org/platform": ["alice"],
+        },
+      }),
+      ownershipTree: ownershipTree(owners),
+    });
+    const retained = await processPullRequestChange(input(), retainedDependencies);
+
+    expect(retained.state.override).toEqual(activated.state.override);
+    expect(retained.checks[1]?.state).toBe("success");
+
+    const revokedDependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      existingComment: retainedDependencies.upsertedBody,
+      identityResolution: identityResolution({
+        teams: {
+          "@org/admins": ["admin"],
+          "@org/platform": ["alice"],
+        },
+      }),
+      ownershipTree: ownershipTree(owners),
+    });
+    const revoked = await processPullRequestChange(
+      {
+        ...input(),
+        overrideCommand: { commentId: 124, type: "revoke" },
+        sender: "admin",
+      },
+      revokedDependencies,
+    );
+
+    expect(revoked.state.override).toBeUndefined();
+    expect(revoked.checks[1]).toEqual({
+      context: "clearance/review",
+      description: "1 review requirement pending",
+      state: "pending",
+    });
+  });
+
   it("returns side effect failures instead of throwing", async () => {
     const dependencies = createDependencies({
       changedFiles: ["src/index.ts"],
@@ -443,6 +528,115 @@ require_any = [
       description: "Requirement or:.:@org/platform:1|@org/security:1 has no eligible reviewers",
       state: "failure",
     });
+  });
+
+  it("allows any require_any option to satisfy an OR requirement, not just the assigned option", async () => {
+    const owners = `
+[[rule]]
+paths = ["src/**"]
+require_any = [
+  { from = "@org/security", count = 1 },
+  { from = "@org/compliance", count = 1 },
+]
+`;
+    const dependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      identityResolution: identityResolution({
+        teams: {
+          "@org/compliance": ["compliance-reviewer"],
+          "@org/security": ["security-reviewer"],
+        },
+      }),
+      ownershipTree: ownershipTree(owners),
+    });
+    dependencies.listReviewerSignals = vi.fn<
+      PullRequestWorkflowDependencies["listReviewerSignals"]
+    >(async () => [
+      {
+        blameCoverage: 1,
+        login: "security-reviewer",
+      },
+      {
+        blameCoverage: 0,
+        login: "compliance-reviewer",
+      },
+    ]);
+    await processPullRequestChange(input(), dependencies);
+    expect(dependencies.requestReviewers).toHaveBeenCalledWith(input(), ["security-reviewer"]);
+
+    const reviewDependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      existingComment: dependencies.upsertedBody ?? "",
+      identityResolution: identityResolution({
+        teams: {
+          "@org/compliance": ["compliance-reviewer"],
+          "@org/security": ["security-reviewer"],
+        },
+      }),
+      ownershipTree: ownershipTree(owners),
+    });
+
+    const result = await processSubmittedReview(
+      {
+        ...input(),
+        reviewState: "approved",
+        reviewer: "compliance-reviewer",
+      },
+      reviewDependencies,
+    );
+
+    expect(result.state.requirements[0]).toEqual(
+      expect.objectContaining({
+        approvedBy: ["compliance-reviewer"],
+        status: "approved",
+      }),
+    );
+    expect(result.checks[1]).toEqual({
+      context: "clearance/review",
+      description: "All review requirements are satisfied",
+      state: "success",
+    });
+  });
+
+  it("supports multiple independent require_any groups in one matching rule", async () => {
+    const dependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      identityResolution: identityResolution({
+        teams: {
+          "@org/compliance": ["compliance-reviewer"],
+          "@org/ml-platform": ["ml-reviewer"],
+          "@org/platform": ["platform-reviewer"],
+          "@org/security": ["security-reviewer"],
+        },
+      }),
+      ownershipTree: ownershipTree(`
+[[rule]]
+paths = ["src/**"]
+require_any = [
+  [
+    { from = "@org/security", count = 1 },
+    { from = "@org/compliance", count = 1 },
+  ],
+  [
+    { from = "@org/platform", count = 1 },
+    { from = "@org/ml-platform", count = 1 },
+  ],
+]
+`),
+    });
+
+    const result = await processPullRequestChange(input(), dependencies);
+
+    expect(result.state.requirements.map((requirement) => requirement.identity)).toEqual([
+      "or:.:@org/compliance:1|@org/security:1",
+      "or:.:@org/ml-platform:1|@org/platform:1",
+    ]);
+    expect(result.checks[1]).toEqual({
+      context: "clearance/review",
+      description: "2 review requirements pending",
+      state: "pending",
+    });
+    expect(result.requestedReviewers).toEqual(["compliance-reviewer", "ml-reviewer"]);
   });
 
   it("retains prior approvals on synchronize when changed files are irrelevant", async () => {
@@ -580,37 +774,46 @@ function ownershipTree(source: string): OwnershipTree {
   };
 }
 
-function identityResolution(options: { members?: string[] } = {}): GithubIdentityResolution {
-  const members = options.members ?? ["alice"];
+function identityResolution(
+  options: { members?: string[]; teams?: Record<string, string[]> } = {},
+): GithubIdentityResolution {
+  const membersByTeam = {
+    "@org/platform": options.members ?? ["alice"],
+    ...options.teams,
+  };
 
   return {
-    candidateReviewersByTeam: new Map([
-      [
-        "@org/platform",
+    candidateReviewersByTeam: new Map(
+      Object.entries(membersByTeam).map(([actor, members]) => [
+        actor,
         members.map((login, index) => ({
           id: index + 1,
           login,
         })),
-      ],
-    ]),
+      ]),
+    ),
     diagnostics: [],
-    teams: new Map([
-      [
-        "@org/platform",
-        {
-          actor: "@org/platform",
-          id: 1,
-          members: members.map((login, index) => ({
-            id: index + 1,
-            login,
-          })),
-          name: "Platform",
-          org: "org",
-          slug: "platform",
-          type: "team",
-        },
-      ],
-    ]),
+    teams: new Map(
+      Object.entries(membersByTeam).map(([actor, members], teamIndex) => {
+        const [org = "org", slug = "team"] = actor.slice(1).split("/");
+
+        return [
+          actor,
+          {
+            actor,
+            id: teamIndex + 1,
+            members: members.map((login, index) => ({
+              id: index + 1,
+              login,
+            })),
+            name: slug,
+            org,
+            slug,
+            type: "team" as const,
+          },
+        ];
+      }),
+    ),
     users: new Map(),
   };
 }

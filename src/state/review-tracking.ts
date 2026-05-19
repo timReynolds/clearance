@@ -6,6 +6,7 @@ import {
 } from "./state.js";
 
 export type ReviewRequirementDefinition = {
+  approvalOptions?: ReviewRequirementApprovalOption[];
   assignedReviewers: string[];
   eligibleReviewers: string[];
   escalateAfter?: string;
@@ -18,6 +19,12 @@ export type ReviewRequirementDefinition = {
   resetOnPush?: boolean;
   type: "and" | "or";
   warnAfter?: string;
+};
+
+export type ReviewRequirementApprovalOption = {
+  eligibleReviewers: string[];
+  from: string;
+  requiredCount: number;
 };
 
 export type RebuildReviewStateInput = {
@@ -82,7 +89,7 @@ export function recordSubmittedReview(
   }
 
   const matchingDefinitions = input.definitions.filter((definition) =>
-    definition.eligibleReviewers.includes(input.reviewer),
+    canReviewerSatisfyDefinition(definition, input.reviewer),
   );
   if (matchingDefinitions.length === 0) {
     return state;
@@ -163,15 +170,12 @@ function buildRequirementState(
   previousRequirement: ClearanceStateRequirement | undefined,
   now: string | undefined,
 ): ClearanceStateRequirement {
-  const approvedBy = approvals
-    .filter((approval) => definition.eligibleReviewers.includes(approval.reviewer))
-    .map((approval) => approval.reviewer)
-    .toSorted(compareStrings);
-  const status = approvedBy.length >= definition.requiredCount ? "approved" : "pending";
+  const approvalState = getApprovalState(definition, approvals, approvedHeadSha);
 
   return {
-    approvedBy,
-    approvedHeadSha: status === "approved" ? approvedHeadSha : undefined,
+    approvalOptions: definition.approvalOptions,
+    approvedBy: approvalState.approvedBy,
+    approvedHeadSha: approvalState.approvedHeadSha,
     assignedReviewers: definition.assignedReviewers,
     eligibleReviewers: definition.eligibleReviewers,
     escalateAfter: definition.escalateAfter,
@@ -183,11 +187,79 @@ function buildRequirementState(
     relevantFiles: definition.relevantFiles,
     requiredCount: definition.requiredCount,
     resetOnPush: definition.resetOnPush,
-    status,
+    status: approvalState.status,
     type: definition.type,
     updatedAt: now ?? previousRequirement?.updatedAt,
     warnAfter: definition.warnAfter,
   };
+}
+
+function canReviewerSatisfyDefinition(
+  definition: ReviewRequirementDefinition,
+  reviewer: string,
+): boolean {
+  if (definition.approvalOptions !== undefined) {
+    return definition.approvalOptions.some((option) => option.eligibleReviewers.includes(reviewer));
+  }
+
+  return definition.eligibleReviewers.includes(reviewer);
+}
+
+function getApprovalState(
+  definition: ReviewRequirementDefinition,
+  approvals: ApprovalRecord[],
+  approvedHeadSha: string | undefined,
+): {
+  approvedBy: string[];
+  approvedHeadSha?: string;
+  status: "approved" | "pending";
+} {
+  if (definition.approvalOptions === undefined) {
+    const approvedBy = getApprovedReviewers(approvals, definition.eligibleReviewers);
+    const status = approvedBy.length >= definition.requiredCount ? "approved" : "pending";
+
+    return {
+      approvedBy,
+      approvedHeadSha: status === "approved" ? approvedHeadSha : undefined,
+      status,
+    };
+  }
+
+  const optionStates = definition.approvalOptions.map((option) => {
+    const optionApprovals = approvals.filter((approval) =>
+      option.eligibleReviewers.includes(approval.reviewer),
+    );
+
+    return {
+      approvedBy: getApprovedReviewers(optionApprovals, option.eligibleReviewers),
+      approvedHeadSha: getApprovedHeadSha(optionApprovals),
+      requiredCount: option.requiredCount,
+    };
+  });
+  const approvedOption = optionStates.find(
+    (option) => option.approvedBy.length >= option.requiredCount,
+  );
+  if (approvedOption !== undefined) {
+    return {
+      approvedBy: approvedOption.approvedBy,
+      approvedHeadSha: approvedOption.approvedHeadSha,
+      status: "approved",
+    };
+  }
+
+  return {
+    approvedBy: [...new Set(optionStates.flatMap((option) => option.approvedBy))].toSorted(
+      compareStrings,
+    ),
+    status: "pending",
+  };
+}
+
+function getApprovedReviewers(approvals: ApprovalRecord[], eligibleReviewers: string[]): string[] {
+  return approvals
+    .filter((approval) => eligibleReviewers.includes(approval.reviewer))
+    .map((approval) => approval.reviewer)
+    .toSorted(compareStrings);
 }
 
 function getApprovedHeadSha(approvals: ApprovalRecord[]): string | undefined {

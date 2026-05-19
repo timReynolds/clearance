@@ -31,6 +31,7 @@ import {
   type PullRequestWorkflowInput,
 } from "../workflow/index.js";
 import type { ClearanceState } from "../state/index.js";
+import { parseOverrideCommentCommand } from "../override/index.js";
 
 const pullRequestActions = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
 
@@ -39,10 +40,29 @@ export type GithubWorkflowOctokit = GithubIdentityOctokit &
   GithubStatusesOctokit &
   NotificationCommentOctokit &
   OwnershipTreeOctokit &
+  PullRequestDetailsOctokit &
   PullRequestFilesOctokit &
   PullRequestReviewersOctokit &
   ReviewerSignalsOctokit &
   StickyCommentOctokit;
+
+type PullRequestDetailsOctokit = {
+  rest: {
+    pulls: {
+      get(parameters: { owner: string; pull_number: number; repo: string }): Promise<{
+        data: {
+          head: {
+            sha: string;
+          };
+          labels?: Array<string | { name?: string }>;
+          user?: {
+            login?: string;
+          } | null;
+        };
+      }>;
+    };
+  };
+};
 
 export type GithubInstallationClientFactory = {
   getInstallationOctokit(installationId: number): Promise<GithubWorkflowOctokit>;
@@ -231,6 +251,98 @@ export function registerGithubHandlers(
     }
   });
 
+  webhooks.on("issue_comment", async ({ id, name, payload }) => {
+    const shouldProcess = await beginWebhookDelivery(options, id, name, payload.action, payload);
+    if (!shouldProcess) {
+      return;
+    }
+
+    try {
+      if (payload.action !== "created") {
+        await recordWebhookDelivery(options, id, name, payload.action, payload, "processed");
+        return;
+      }
+
+      const command = parseOverrideCommentCommand(payload.comment.body ?? "");
+      if (command === undefined || payload.issue.pull_request === undefined) {
+        await recordWebhookDelivery(options, id, name, payload.action, payload, "processed");
+        return;
+      }
+
+      const repository = payload.repository.full_name;
+      const pullNumber = payload.issue.number;
+      const installationId = getInstallationId(payload);
+      const octokit = await getPayloadOctokit(payload, installationClientFactory);
+      const sender = payload.sender?.login;
+
+      if (octokit !== undefined && sender !== undefined) {
+        const pullRequest = await getPullRequestDetails(octokit, {
+          owner: payload.repository.owner.login,
+          pullNumber,
+          repo: payload.repository.name,
+        });
+        const author = pullRequest.author;
+        if (author !== undefined) {
+          const input = await createPullRequestWorkflowInput(
+            {
+              author,
+              headSha: pullRequest.headSha,
+              labels: pullRequest.labels,
+              overrideCommand: {
+                ...command,
+                commentId: payload.comment.id,
+              },
+              owner: payload.repository.owner.login,
+              pullNumber,
+              repo: payload.repository.name,
+              sender,
+            },
+            payload,
+            octokit,
+          );
+          const result = await processPullRequestChange(
+            input,
+            buildWorkflowDependencies(octokit, options, installationId),
+          );
+
+          console.info(
+            {
+              checks: result.checks,
+              command: command.type,
+              pullNumber,
+              repository,
+              sideEffectFailures: result.sideEffectFailures,
+            },
+            "processed override comment event",
+          );
+        }
+      }
+
+      await recordWebhookDelivery(options, id, name, payload.action, payload, "processed");
+
+      console.info(
+        {
+          action: payload.action,
+          event: name,
+          pullNumber,
+          repository,
+        },
+        "received issue comment event",
+      );
+    } catch (error) {
+      await recordWebhookDelivery(
+        options,
+        id,
+        name,
+        payload.action,
+        payload,
+        "failed",
+        getErrorMessage(error, "webhook processing failed"),
+      );
+      throw error;
+    }
+  });
+
   webhooks.onError((error) => {
     console.error(error, "webhook processing failed");
   });
@@ -270,6 +382,43 @@ async function getChangedFilesSinceLastApproval(
     owner: input.owner,
     repo: input.repo,
   });
+}
+
+async function getPullRequestDetails(
+  octokit: PullRequestDetailsOctokit,
+  ref: {
+    owner: string;
+    pullNumber: number;
+    repo: string;
+  },
+): Promise<{
+  author?: string;
+  headSha: string;
+  labels: string[];
+}> {
+  const response = await octokit.rest.pulls.get({
+    owner: ref.owner,
+    pull_number: ref.pullNumber,
+    repo: ref.repo,
+  });
+
+  return {
+    author: response.data.user?.login,
+    headSha: response.data.head.sha,
+    labels: getLabelNames(response.data.labels ?? []),
+  };
+}
+
+function getLabelNames(labels: Array<string | { name?: string }>): string[] {
+  return labels
+    .flatMap((label) => {
+      if (typeof label === "string") {
+        return [label];
+      }
+
+      return label.name === undefined ? [] : [label.name];
+    })
+    .toSorted(compareStrings);
 }
 
 function buildWorkflowDependencies(
@@ -521,4 +670,16 @@ function getSynchronizeBeforeSha(payload: unknown): string | undefined {
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
+}
+
+function compareStrings(left: string, right: string): number {
+  if (left < right) {
+    return -1;
+  }
+
+  if (left > right) {
+    return 1;
+  }
+
+  return 0;
 }

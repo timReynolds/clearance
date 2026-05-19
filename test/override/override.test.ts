@@ -1,38 +1,28 @@
 import { describe, expect, it } from "vitest";
 
-import { evaluateOverride } from "../../src/override/index.js";
+import { evaluateOverride, parseOverrideCommentCommand } from "../../src/override/index.js";
 import { parseOwnersToml, type OwnershipFile } from "../../src/owners/index.js";
 
-describe("evaluateOverride", () => {
-  it("does not activate when no override is configured or the label is absent", () => {
+describe("override commands", () => {
+  it("parses activation and revoke comment commands", () => {
+    expect(parseOverrideCommentCommand("@clearance override")).toEqual({ type: "activate" });
+    expect(parseOverrideCommentCommand("@clearance override revoke")).toEqual({ type: "revoke" });
+    expect(parseOverrideCommentCommand("looks good")).toBeUndefined();
+  });
+
+  it("does not activate when no override is configured", () => {
     expect(
       evaluateOverride({
         actor: "admin",
         at: "2026-05-17T12:00:00.000Z",
+        command: { type: "activate" },
         configValid: true,
-        labels: ["clearance-override"],
         ownershipFiles: [ownershipFile("")],
         teamMembersByActor: {},
       }),
     ).toEqual({
-      active: false,
       reason: "no override is configured",
-    });
-
-    expect(
-      evaluateOverride({
-        actor: "admin",
-        at: "2026-05-17T12:00:00.000Z",
-        configValid: true,
-        labels: [],
-        ownershipFiles: [overrideFile()],
-        teamMembersByActor: {
-          "@org/admins": ["admin"],
-        },
-      }),
-    ).toEqual({
-      active: false,
-      reason: "override label clearance-override is not present",
+      type: "rejected",
     });
   });
 
@@ -41,42 +31,63 @@ describe("evaluateOverride", () => {
       evaluateOverride({
         actor: "mallory",
         at: "2026-05-17T12:00:00.000Z",
+        command: { commentId: 123, type: "activate" },
         configValid: true,
-        labels: ["clearance-override"],
         ownershipFiles: [overrideFile()],
         teamMembersByActor: {
           "@org/admins": ["admin"],
         },
       }),
     ).toEqual({
-      active: false,
       reason: "actor mallory is not a member of an override team",
+      type: "rejected",
     });
   });
 
-  it("activates authorized overrides and returns an audit event", () => {
+  it("authorizes activate and revoke commands from override team members", () => {
+    const input = {
+      actor: "admin",
+      at: "2026-05-17T12:00:00.000Z",
+      configValid: true,
+      ownershipFiles: [overrideFile()],
+      teamMembersByActor: {
+        "@org/admins": ["admin"],
+      },
+    };
+
     expect(
       evaluateOverride({
-        actor: "admin",
-        at: "2026-05-17T12:00:00.000Z",
-        configValid: true,
-        labels: ["bugfix", "clearance-override"],
-        ownershipFiles: [overrideFile()],
-        teamMembersByActor: {
-          "@org/admins": ["admin"],
-        },
+        ...input,
+        command: { commentId: 123, type: "activate" },
       }),
     ).toEqual({
-      active: true,
       actor: "admin",
       auditEvent: {
         actor: "admin",
         at: "2026-05-17T12:00:00.000Z",
-        message: "Override activated with label clearance-override",
+        message: "Override activated by @clearance override command",
         type: "override",
       },
-      label: "clearance-override",
+      commentId: 123,
       team: "@org/admins",
+      type: "activate",
+    });
+    expect(
+      evaluateOverride({
+        ...input,
+        command: { commentId: 124, type: "revoke" },
+      }),
+    ).toEqual({
+      actor: "admin",
+      auditEvent: {
+        actor: "admin",
+        at: "2026-05-17T12:00:00.000Z",
+        message: "Override revoked by @clearance override command",
+        type: "override",
+      },
+      commentId: 124,
+      team: "@org/admins",
+      type: "revoke",
     });
   });
 
@@ -85,16 +96,16 @@ describe("evaluateOverride", () => {
       evaluateOverride({
         actor: "admin",
         at: "2026-05-17T12:00:00.000Z",
+        command: { type: "activate" },
         configValid: false,
-        labels: ["clearance-override"],
         ownershipFiles: [overrideFile()],
         teamMembersByActor: {
           "@org/admins": ["admin"],
         },
       }),
     ).toEqual({
-      active: false,
       reason: "invalid OWNERS.toml configuration cannot be bypassed by override",
+      type: "rejected",
     });
   });
 });
@@ -103,7 +114,6 @@ function overrideFile(): OwnershipFile {
   return ownershipFile(`
 [override]
 teams = ["@org/admins"]
-label = "clearance-override"
 `);
 }
 

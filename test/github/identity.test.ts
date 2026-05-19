@@ -63,7 +63,6 @@ users = ["@alice"]
 
 [override]
 teams = ["@org/admins"]
-label = "clearance-override"
 `,
       ),
     ]);

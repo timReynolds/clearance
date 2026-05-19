@@ -346,7 +346,7 @@ function buildStateEvents(state: ClearanceState): StateEvent[] {
           {
             actor: state.override.actor,
             at: state.override.at,
-            message: `Override activated with label ${state.override.label}`,
+            message: "Override activated by @clearance override command",
             type: "override",
           },
         ];

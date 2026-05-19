@@ -25,6 +25,7 @@ const requirementSchema = z
     count: z.number().int().positive().default(1),
   })
   .strict();
+type RequirementConfig = z.infer<typeof requirementSchema>;
 
 const escalationSchema = z
   .object({
@@ -40,7 +41,7 @@ const ruleSchema = z
   .object({
     paths: z.array(z.string().min(1)).min(1),
     require: z.array(requirementSchema).default([]),
-    require_any: z.array(requirementSchema).default([]),
+    require_any: createRequireAnySchema(),
     escalation: escalationSchema.optional(),
   })
   .strict();
@@ -56,9 +57,18 @@ const notifySchema = z
 const overrideSchema = z
   .object({
     teams: z.array(teamSchema).min(1),
-    label: z.string().min(1),
   })
   .strict();
+
+type RequireAnyParseResult =
+  | {
+      data: RequirementConfig[][];
+      success: true;
+    }
+  | {
+      error: z.ZodError;
+      success: false;
+    };
 
 export const ownersConfigSchema = z
   .object({
@@ -136,6 +146,59 @@ export function parseOwnersToml(
       ok: false,
     };
   }
+}
+
+function createRequireAnySchema(): z.ZodType<RequirementConfig[][]> {
+  return z
+    .unknown()
+    .optional()
+    .superRefine((value, context) => {
+      const result = parseRequireAny(value);
+      if (result.success) {
+        return;
+      }
+
+      for (const issue of result.error.issues) {
+        context.addIssue(issue as unknown as Parameters<typeof context.addIssue>[0]);
+      }
+    })
+    .transform((value): RequirementConfig[][] => {
+      const result = parseRequireAny(value);
+      return result.success ? result.data : [];
+    });
+}
+
+function parseRequireAny(value: unknown): RequireAnyParseResult {
+  if (value === undefined) {
+    return {
+      data: [],
+      success: true,
+    };
+  }
+
+  if (Array.isArray(value) && value.length > 0 && value.every((entry) => Array.isArray(entry))) {
+    const nestedResult = z.array(z.array(requirementSchema).min(1)).safeParse(value);
+    return nestedResult.success
+      ? {
+          data: nestedResult.data,
+          success: true,
+        }
+      : {
+          error: nestedResult.error,
+          success: false,
+        };
+  }
+
+  const legacyResult = z.array(requirementSchema).safeParse(value);
+  return legacyResult.success
+    ? {
+        data: legacyResult.data.length === 0 ? [] : [legacyResult.data],
+        success: true,
+      }
+    : {
+        error: legacyResult.error,
+        success: false,
+      };
 }
 
 function buildDiagnosticsFromZodIssue(

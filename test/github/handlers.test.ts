@@ -9,11 +9,13 @@ import {
   type GithubInstallationClientFactory,
   type GithubWorkflowOctokit,
 } from "../../src/github/handlers.js";
+import { parseClearanceState } from "../../src/state/index.js";
 
 type GetBlob = GithubWorkflowOctokit["rest"]["git"]["getBlob"];
 type GetTree = GithubWorkflowOctokit["rest"]["git"]["getTree"];
 type GetTeam = GithubWorkflowOctokit["rest"]["teams"]["getByName"];
 type ListMembers = GithubWorkflowOctokit["rest"]["teams"]["listMembersInOrg"];
+type GetPull = GithubWorkflowOctokit["rest"]["pulls"]["get"];
 type ListFiles = GithubWorkflowOctokit["rest"]["pulls"]["listFiles"];
 type ListReviews = GithubWorkflowOctokit["rest"]["pulls"]["listReviews"];
 type ListComments = GithubWorkflowOctokit["rest"]["issues"]["listComments"];
@@ -155,6 +157,69 @@ describe("registerGithubHandlers", () => {
     } as unknown as EmitterWebhookEvent);
 
     expect(getInstallationOctokit).not.toHaveBeenCalled();
+  });
+
+  it("processes override issue comments on pull requests", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const webhooks = new Webhooks({ secret: "test-secret" });
+    const octokit = createWorkflowOctokit();
+
+    registerGithubHandlers(webhooks, {
+      getInstallationOctokit: vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
+        async () => octokit,
+      ),
+    });
+
+    await webhooks.receive({
+      id: "delivery-id-activate",
+      name: "issue_comment",
+      payload: createIssueCommentPayload("@clearance override", 200),
+    } as unknown as EmitterWebhookEvent);
+
+    expect(octokit.rest.pulls.get).toHaveBeenCalledWith({
+      owner: "acme",
+      pull_number: 42,
+      repo: "clearance",
+    });
+    expect(octokit.rest.pulls.requestReviewers).not.toHaveBeenCalled();
+    expect(octokit.rest.repos.createCommitStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: "clearance/review",
+        state: "success",
+      }),
+    );
+
+    const createdBody = vi.mocked(octokit.rest.issues.createComment).mock.calls[0]?.[0].body;
+    expect(createdBody).toEqual(expect.stringContaining("@clearance override"));
+    expect(parseClearanceState(createdBody).state.override).toEqual({
+      actor: "admin",
+      at: expect.any(String),
+      commentId: 200,
+    });
+
+    vi.mocked(octokit.rest.issues.listComments).mockResolvedValueOnce({
+      data: [
+        {
+          body: createdBody,
+          id: 100,
+        },
+      ],
+    });
+
+    await webhooks.receive({
+      id: "delivery-id-revoke",
+      name: "issue_comment",
+      payload: createIssueCommentPayload("@clearance override revoke", 201),
+    } as unknown as EmitterWebhookEvent);
+
+    const updatedBody = vi.mocked(octokit.rest.issues.updateComment).mock.calls[0]?.[0].body;
+    expect(parseClearanceState(updatedBody).state.override).toBeUndefined();
+    expect(octokit.rest.repos.createCommitStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: "clearance/review",
+        state: "pending",
+      }),
+    );
   });
 
   it("logs receipt without processing when installation data is missing", async () => {
@@ -301,6 +366,9 @@ function createWorkflowOctokit(): GithubWorkflowOctokit {
 [[rule]]
 paths = ["src/**"]
 require = [{ from = "@org/platform", count = 1 }]
+
+[override]
+teams = ["@org/admins"]
 `,
               "utf8",
             ).toString("base64"),
@@ -337,6 +405,17 @@ require = [{ from = "@org/platform", count = 1 }]
         })),
       },
       pulls: {
+        get: vi.fn<GetPull>(async () => ({
+          data: {
+            head: {
+              sha: "head-sha",
+            },
+            labels: [],
+            user: {
+              login: "author",
+            },
+          },
+        })),
         listFiles: vi.fn<ListFiles>(async () => ({
           data: [{ filename: "src/index.ts" }],
         })),
@@ -371,11 +450,11 @@ require = [{ from = "@org/platform", count = 1 }]
             slug: "platform",
           },
         })),
-        listMembersInOrg: vi.fn<ListMembers>(async () => ({
+        listMembersInOrg: vi.fn<ListMembers>(async ({ team_slug }) => ({
           data: [
             {
               id: 1,
-              login: "alice",
+              login: team_slug === "admins" ? "admin" : "alice",
               type: "User",
             },
           ],
@@ -432,6 +511,35 @@ function createPullRequestReviewPayload(action: string) {
       user: {
         login: "alice",
       },
+    },
+  };
+}
+
+function createIssueCommentPayload(body: string, commentId = 200) {
+  return {
+    action: "created",
+    comment: {
+      body,
+      id: commentId,
+    },
+    installation: {
+      id: 123,
+    },
+    issue: {
+      number: 42,
+      pull_request: {
+        url: "https://api.github.com/repos/acme/clearance/pulls/42",
+      },
+    },
+    repository: {
+      full_name: "acme/clearance",
+      name: "clearance",
+      owner: {
+        login: "acme",
+      },
+    },
+    sender: {
+      login: "admin",
     },
   };
 }
