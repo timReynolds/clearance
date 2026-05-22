@@ -1,7 +1,7 @@
 import { App } from "@octokit/app";
 import dotenv from "dotenv";
 
-import { createDatabaseClient, DrizzleClearanceStore, type DatabaseClient } from "./db/index.js";
+import { createDatabaseClient, DrizzleClearanceStore } from "./db/index.js";
 import { readEnv } from "./env.js";
 import { runGithubEscalationSweep, type GithubEscalationRunnerOctokit } from "./github/index.js";
 
@@ -16,18 +16,28 @@ const app = new App({
     secret: env.GITHUB_WEBHOOK_SECRET,
   },
 });
-const databaseClient = createOptionalDatabaseClient();
-const stateStore =
-  databaseClient === undefined ? undefined : new DrizzleClearanceStore(databaseClient.db);
+
+if (env.DATABASE_URL === undefined) {
+  throw new Error("DATABASE_URL is required to run escalation sweeps");
+}
+
+const databaseClient = createDatabaseClient({
+  maxConnections: env.DATABASE_MAX_CONNECTIONS,
+  prepareStatements: env.DATABASE_PREPARE_STATEMENTS,
+  url: env.DATABASE_URL,
+});
+const stateStore = new DrizzleClearanceStore(databaseClient.db);
 
 try {
-  if (env.ESCALATION_REPOSITORIES.length === 0) {
-    console.info("No ESCALATION_REPOSITORIES configured; nothing to process");
+  const repositories = await stateStore.listTrackedRepositories();
+
+  if (repositories.length === 0) {
+    console.info("No tracked Clearance repositories found in the database; nothing to process");
   } else {
     const now = new Date().toISOString();
 
     await Promise.all(
-      env.ESCALATION_REPOSITORIES.map(async (repository) => {
+      repositories.map(async (repository) => {
         const installation = await app.octokit.request("GET /repos/{owner}/{repo}/installation", {
           owner: repository.owner,
           repo: repository.repo,
@@ -45,18 +55,5 @@ try {
     );
   }
 } finally {
-  await databaseClient?.close();
-}
-
-function createOptionalDatabaseClient(): DatabaseClient | undefined {
-  if (env.DATABASE_URL === undefined) {
-    console.info("DATABASE_URL is not set; using sticky comment state only");
-    return undefined;
-  }
-
-  return createDatabaseClient({
-    maxConnections: env.DATABASE_MAX_CONNECTIONS,
-    prepareStatements: env.DATABASE_PREPARE_STATEMENTS,
-    url: env.DATABASE_URL,
-  });
+  await databaseClient.close();
 }

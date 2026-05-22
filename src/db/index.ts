@@ -11,5 +11,6 @@ export {
   type OutboxJobFailureInput,
   type OutboxJobRecord,
   type PullRequestStateRef,
+  type TrackedRepository,
   type WebhookDeliveryInput,
 } from "./store.js";

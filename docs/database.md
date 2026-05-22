@@ -82,3 +82,7 @@ OUTBOX_POLL_INTERVAL_MS=0
 ```
 
 The default `OUTBOX_POLL_INTERVAL_MS=0` drains once and exits, which fits scheduler-based hosting. Set a positive interval, for example `5000`, to keep the process alive and poll continuously.
+
+## Escalation
+
+Escalation sweeps require database state. The runner discovers repositories from stored `clearance.pull_requests` rows, then checks GitHub for currently open pull requests in those repositories before applying warning, escalation, and fallback actions.

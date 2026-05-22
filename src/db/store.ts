@@ -24,6 +24,8 @@ export type PullRequestStateRef = {
   repo: string;
 };
 
+export type TrackedRepository = Pick<PullRequestStateRef, "owner" | "repo">;
+
 export type WebhookDeliveryInput = {
   action?: string;
   deliveryId: string;
@@ -57,6 +59,16 @@ export type OutboxJobFailureInput = {
 
 export class DrizzleClearanceStore {
   constructor(private readonly db: ClearanceDatabase) {}
+
+  async listTrackedRepositories(): Promise<TrackedRepository[]> {
+    return this.db
+      .selectDistinct({
+        owner: pullRequests.owner,
+        repo: pullRequests.repo,
+      })
+      .from(pullRequests)
+      .orderBy(asc(pullRequests.owner), asc(pullRequests.repo));
+  }
 
   async loadPullRequestState(
     ref: Pick<PullRequestStateRef, "owner" | "pullNumber" | "repo">,

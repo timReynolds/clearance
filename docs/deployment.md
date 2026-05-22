@@ -57,7 +57,6 @@ OUTBOX_MAX_ATTEMPTS=5
 OUTBOX_POLL_INTERVAL_MS=0
 PORT=3000
 WEBHOOK_PATH=/api/github/webhooks
-ESCALATION_REPOSITORIES=owner/repo,another-owner/another-repo
 ```
 
 Private keys may contain escaped newlines. The app normalizes `\n` sequences at startup.
@@ -107,6 +106,8 @@ Run one escalation sweep:
 npm run start:escalate
 ```
 
+Escalation sweeps require `DATABASE_URL`; they discover repositories from stored Clearance state.
+
 Run one outbox drain:
 
 ```sh
@@ -141,7 +142,6 @@ fly secrets set \
   GITHUB_APP_ID=12345 \
   GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----" \
   GITHUB_WEBHOOK_SECRET=change-me \
-  ESCALATION_REPOSITORIES=owner/repo \
   --app clearance-tr \
   --stage
 ```
@@ -179,4 +179,4 @@ Open a pull request with a matching `OWNERS.toml` rule. Clearance should create 
 - The hidden V1 JSON block in the sticky comment remains as a compatibility fallback.
 - The current HTTP service handles PR and review webhook workflows.
 - When `DATABASE_URL` is configured, GitHub write side effects are queued in `clearance.outbox_jobs`; schedule `npm run start:outbox` with your platform scheduler or set `OUTBOX_POLL_INTERVAL_MS` to run it as a polling worker process.
-- Escalation runs as a commandable sweep over `ESCALATION_REPOSITORIES`; schedule `npm run start:escalate` with your platform scheduler.
+- Escalation runs as a commandable sweep over repositories already tracked in the database; schedule `npm run start:escalate` with your platform scheduler.
