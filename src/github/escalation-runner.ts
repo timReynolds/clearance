@@ -245,7 +245,8 @@ function getGithubOutbox(
   return {
     installationId: options.installationId,
     store: {
-      enqueueOutboxJob: options.stateStore.enqueueOutboxJob,
+      enqueueOutboxJob: (input) =>
+        options.stateStore?.enqueueOutboxJob?.(input) ?? Promise.resolve(),
     },
   };
 }
