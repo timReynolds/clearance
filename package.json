@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/timothyreynolds/clearance.git"
+    "url": "git+ssh://git@github.com/timReynolds/clearance.git"
   },
   "type": "module",
   "engines": {
