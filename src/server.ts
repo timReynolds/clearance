@@ -7,6 +7,7 @@ import dotenv from "dotenv";
 import { createDatabaseClient, DrizzleClearanceStore, type DatabaseClient } from "./db/index.js";
 import { readEnv } from "./env.js";
 import { registerGithubHandlers, type GithubWorkflowOctokit } from "./github/handlers.js";
+import { createInstallationOctokit } from "./github/installation-client.js";
 
 dotenv.config();
 
@@ -28,7 +29,7 @@ registerGithubHandlers(
   app.webhooks,
   {
     getInstallationOctokit: async (installationId) =>
-      app.getInstallationOctokit(installationId) as unknown as Promise<GithubWorkflowOctokit>,
+      createInstallationOctokit(app, installationId) as unknown as Promise<GithubWorkflowOctokit>,
   },
   { stateStore },
 );

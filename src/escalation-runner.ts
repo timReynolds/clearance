@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import { createDatabaseClient, DrizzleClearanceStore } from "./db/index.js";
 import { readEnv } from "./env.js";
 import { runGithubEscalationSweep, type GithubEscalationRunnerOctokit } from "./github/index.js";
+import { createInstallationOctokit } from "./github/installation-client.js";
 
 dotenv.config();
 
@@ -42,7 +43,8 @@ try {
           owner: repository.owner,
           repo: repository.repo,
         });
-        const octokit = (await app.getInstallationOctokit(
+        const octokit = (await createInstallationOctokit(
+          app,
           installation.data.id,
         )) as unknown as GithubEscalationRunnerOctokit;
         const result = await runGithubEscalationSweep(octokit, repository, now, {

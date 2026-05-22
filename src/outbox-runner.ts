@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import { createDatabaseClient, DrizzleClearanceStore } from "./db/index.js";
 import { readEnv } from "./env.js";
 import { runGithubOutboxOnce, type GithubOutboxOctokit } from "./github/index.js";
+import { createInstallationOctokit } from "./github/installation-client.js";
 
 dotenv.config();
 
@@ -45,7 +46,7 @@ async function runOutbox(): Promise<void> {
   const result = await runGithubOutboxOnce(
     {
       getInstallationOctokit: async (installationId) =>
-        app.getInstallationOctokit(installationId) as unknown as Promise<GithubOutboxOctokit>,
+        createInstallationOctokit(app, installationId) as unknown as Promise<GithubOutboxOctokit>,
     },
     store,
     {
