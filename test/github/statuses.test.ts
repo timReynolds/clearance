@@ -53,4 +53,38 @@ describe("setCommitStatuses", () => {
       state: "pending",
     });
   });
+
+  it("truncates descriptions to GitHub's commit status limit", async () => {
+    const createCommitStatus = vi.fn<CreateCommitStatus>(async () => ({}));
+    const octokit: GithubStatusesOctokit = {
+      rest: {
+        repos: {
+          createCommitStatus,
+        },
+      },
+    };
+    const description = "x".repeat(200);
+
+    await setCommitStatuses(
+      octokit,
+      {
+        owner: "acme",
+        repo: "clearance",
+        sha: "abc123",
+      },
+      [
+        {
+          context: "clearance/review",
+          description,
+          state: "failure",
+        },
+      ],
+    );
+
+    expect(createCommitStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: `${"x".repeat(137)}...`,
+      }),
+    );
+  });
 });
