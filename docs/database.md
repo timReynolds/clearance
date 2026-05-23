@@ -1,6 +1,6 @@
 # Database
 
-Clearance uses Supabase Postgres through Drizzle when `DATABASE_URL` is configured.
+Clearance requires Supabase Postgres through Drizzle.
 
 The database is the canonical persistence layer for:
 
@@ -9,7 +9,7 @@ The database is the canonical persistence layer for:
 - webhook delivery tracking
 - durable GitHub side-effect outbox jobs
 
-The sticky PR comment remains the user-facing GitHub status surface and compatibility fallback.
+The sticky PR comment remains the user-facing GitHub status surface.
 
 ## Local Setup
 
@@ -59,7 +59,7 @@ This avoids prepared-statement issues if the connection later moves through a po
 
 ## Outbox
 
-When `DATABASE_URL` is configured, webhook and escalation workflows enqueue GitHub writes instead of performing them inline. The outbox currently handles:
+Webhook and escalation workflows enqueue GitHub writes instead of performing them inline. The outbox currently handles:
 
 - sticky comment upserts
 - standalone escalation or fallback comments

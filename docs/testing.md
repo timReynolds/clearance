@@ -85,4 +85,4 @@ Reference: [`@octokit/webhooks` README](https://github.com/octokit/webhooks.js#r
 - Include one success case and one unhappy path for each new adapter or workflow branch.
 - Prefer result values and diagnostics for expected operational failures.
 - Reserve thrown errors for programmer errors, test helpers, or truly unexpected runtime failures.
-- Keep sticky comment state round-trip tests whenever the state shape changes.
+- Keep hidden sticky comment snapshot round-trip tests whenever the state shape changes.

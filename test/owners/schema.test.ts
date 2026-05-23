@@ -7,6 +7,7 @@ describe("parseOwnersToml", () => {
     const result = parseOwnersToml(
       `
 inherit = true
+dry_run = true
 
 [escalation]
 warn_after = "4h"
@@ -42,6 +43,7 @@ teams = ["@org/repo-admins"]
 
     expect(result.diagnostics).toEqual([]);
     expect(result.config.inherit).toBe(true);
+    expect(result.config.dry_run).toBe(true);
     expect(result.config.rule).toHaveLength(1);
     expect(result.config.rule[0]?.require).toEqual([{ from: "@org/platform-eng", count: 1 }]);
     expect(result.config.rule[0]?.require_any).toEqual([
@@ -111,6 +113,7 @@ require_any = [
     const result = expectParseSuccess("");
 
     expect(result.config).toEqual({
+      dry_run: false,
       inherit: true,
       notify: [],
       rule: [],

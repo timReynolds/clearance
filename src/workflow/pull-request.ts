@@ -19,8 +19,8 @@ import {
   type RequirementTrigger,
 } from "../resolution/index.js";
 import {
+  createEmptyClearanceState,
   invalidateStaleApprovals,
-  parseClearanceState,
   rebuildReviewState,
   recordSubmittedReview,
   renderClearanceComment,
@@ -49,18 +49,17 @@ export type SubmittedReviewWorkflowInput = PullRequestWorkflowInput & {
 };
 
 export type PullRequestWorkflowDependencies = {
-  findStickyComment(input: PullRequestWorkflowInput): Promise<{ body?: string } | undefined>;
   listChangedFiles(input: PullRequestWorkflowInput): Promise<string[]>;
   listReviewerSignals(
     input: PullRequestWorkflowInput,
     reviewers: string[],
     changedFiles: string[],
   ): Promise<ReviewerSignal[]>;
-  loadState?(input: PullRequestWorkflowInput): Promise<ClearanceState | undefined>;
+  loadState(input: PullRequestWorkflowInput): Promise<ClearanceState | undefined>;
   loadOwnershipTree(input: PullRequestWorkflowInput): Promise<OwnershipTree>;
   requestReviewers(input: PullRequestWorkflowInput, reviewers: string[]): Promise<void>;
   resolveIdentities(tree: OwnershipTree): Promise<GithubIdentityResolution>;
-  saveState?(input: PullRequestWorkflowInput, state: ClearanceState): Promise<void>;
+  saveState(input: PullRequestWorkflowInput, state: ClearanceState): Promise<void>;
   sendNotifications(
     input: PullRequestWorkflowInput,
     notifications: NotificationRecord[],
@@ -75,6 +74,11 @@ export type ReviewerSignal = Pick<ReviewerCandidate, "login"> &
 export type WorkflowSideEffectFailure = {
   message: string;
   operation: "request-reviewers" | "send-notifications" | "set-statuses" | "upsert-comment";
+};
+
+type WorkflowSideEffect = {
+  execute(): Promise<void>;
+  operation: WorkflowSideEffectFailure["operation"];
 };
 
 export type PullRequestWorkflowResult = {
@@ -95,6 +99,7 @@ type WorkflowContext = {
   hardErrors: string[];
   identityResolution: GithubIdentityResolution;
   reviewerAssignments: AssignmentResult;
+  dryRun: boolean;
   ownershipResolution: OwnershipResolution;
   ownershipTree: OwnershipTree;
 };
@@ -104,6 +109,7 @@ export async function processPullRequestChange(
   dependencies: PullRequestWorkflowDependencies,
 ): Promise<PullRequestWorkflowResult> {
   const context = await buildWorkflowContext(input, dependencies);
+  const dryRun = context.dryRun;
   const previousState = await loadPreviousState(input, dependencies);
   const baseState =
     input.changedFilesSinceLastApproval === undefined
@@ -119,11 +125,13 @@ export async function processPullRequestChange(
           headSha: input.headSha,
           now: input.now,
         });
-  const assignmentRecords = buildAssignmentRecords(
-    baseState.assignments,
-    context.reviewerAssignments.assignments,
-    input.now,
-  );
+  const assignmentRecords = dryRun
+    ? baseState.assignments
+    : buildAssignmentRecords(
+        baseState.assignments,
+        context.reviewerAssignments.assignments,
+        input.now,
+      );
   const state = {
     ...baseState,
     assignments: assignmentRecords,
@@ -135,15 +143,15 @@ export async function processPullRequestChange(
     ],
   };
   const overrideResult = applyWorkflowOverride(input, context, state);
-  const finalState = overrideResult.state;
+  const finalState = applyDryRunState(overrideResult.state, dryRun);
   const checks = createWorkflowChecks(context, finalState, overrideResult.active);
   const pendingNotifications =
-    context.configValid && overrideResult.active !== true
+    context.configValid && overrideResult.active !== true && !dryRun
       ? getPendingNotifications(baseState, context.ownershipResolution.notifications)
       : [];
   const requestedReviewers =
-    context.configValid && overrideResult.active !== true
-      ? getNewAssignmentReviewers(baseState.assignments, assignmentRecords)
+    context.configValid && overrideResult.active !== true && !dryRun
+      ? getNewAssignmentReviewers(baseState.assignments, assignmentRecords, finalState.requirements)
       : [];
   const finalStateWithNotifications = {
     ...finalState,
@@ -155,7 +163,7 @@ export async function processPullRequestChange(
     ].toSorted(compareStrings),
   };
 
-  await dependencies.saveState?.(input, finalStateWithNotifications);
+  await dependencies.saveState(input, finalStateWithNotifications);
 
   const sideEffectFailures = await runWorkflowSideEffects([
     {
@@ -163,18 +171,14 @@ export async function processPullRequestChange(
         dependencies.upsertComment(input, renderClearanceComment(finalStateWithNotifications)),
       operation: "upsert-comment",
     },
-    {
-      execute: () => dependencies.setStatuses(input, checks),
-      operation: "set-statuses",
-    },
-    {
-      execute: () => dependencies.requestReviewers(input, requestedReviewers),
-      operation: "request-reviewers",
-    },
-    {
-      execute: () => dependencies.sendNotifications(input, pendingNotifications),
-      operation: "send-notifications",
-    },
+    ...getEnforcementSideEffects(
+      input,
+      dependencies,
+      checks,
+      requestedReviewers,
+      pendingNotifications,
+      dryRun,
+    ),
   ]);
 
   return {
@@ -191,6 +195,7 @@ export async function processSubmittedReview(
   dependencies: PullRequestWorkflowDependencies,
 ): Promise<PullRequestWorkflowResult> {
   const context = await buildWorkflowContext(input, dependencies);
+  const dryRun = context.dryRun;
   const previousState = await loadPreviousState(input, dependencies);
   const state = recordSubmittedReview(previousState, {
     approvedAt: input.now,
@@ -199,24 +204,21 @@ export async function processSubmittedReview(
     reviewer: input.reviewer,
     state: input.reviewState,
   });
-  const reconciledState = reconcileStoredOverride(context, state);
+  const reconciledState = applyDryRunState(reconcileStoredOverride(context, state), dryRun);
   const checks = createWorkflowChecks(
     context,
     reconciledState,
     reconciledState.override !== undefined,
   );
 
-  await dependencies.saveState?.(input, reconciledState);
+  await dependencies.saveState(input, reconciledState);
 
   const sideEffectFailures = await runWorkflowSideEffects([
     {
       execute: () => dependencies.upsertComment(input, renderClearanceComment(reconciledState)),
       operation: "upsert-comment",
     },
-    {
-      execute: () => dependencies.setStatuses(input, checks),
-      operation: "set-statuses",
-    },
+    ...getSubmittedReviewEnforcementSideEffects(input, dependencies, checks, dryRun),
   ]);
 
   return {
@@ -228,16 +230,70 @@ export async function processSubmittedReview(
   };
 }
 
+function applyDryRunState(state: ClearanceState, dryRun: boolean): ClearanceState {
+  if (dryRun) {
+    return {
+      ...state,
+      dryRun: true,
+    };
+  }
+
+  const nextState = { ...state };
+  delete nextState.dryRun;
+  return nextState;
+}
+
+function getEnforcementSideEffects(
+  input: PullRequestWorkflowInput,
+  dependencies: PullRequestWorkflowDependencies,
+  checks: CheckDecision[],
+  requestedReviewers: string[],
+  pendingNotifications: NotificationRecord[],
+  dryRun: boolean,
+): WorkflowSideEffect[] {
+  if (dryRun) {
+    return [];
+  }
+
+  return [
+    {
+      execute: () => dependencies.setStatuses(input, checks),
+      operation: "set-statuses",
+    },
+    {
+      execute: () => dependencies.requestReviewers(input, requestedReviewers),
+      operation: "request-reviewers",
+    },
+    {
+      execute: () => dependencies.sendNotifications(input, pendingNotifications),
+      operation: "send-notifications",
+    },
+  ];
+}
+
+function getSubmittedReviewEnforcementSideEffects(
+  input: PullRequestWorkflowInput,
+  dependencies: PullRequestWorkflowDependencies,
+  checks: CheckDecision[],
+  dryRun: boolean,
+): WorkflowSideEffect[] {
+  if (dryRun) {
+    return [];
+  }
+
+  return [
+    {
+      execute: () => dependencies.setStatuses(input, checks),
+      operation: "set-statuses",
+    },
+  ];
+}
+
 async function loadPreviousState(
   input: PullRequestWorkflowInput,
   dependencies: PullRequestWorkflowDependencies,
 ): Promise<ClearanceState> {
-  const storedState = await dependencies.loadState?.(input);
-  if (storedState !== undefined) {
-    return storedState;
-  }
-
-  return parseClearanceState((await dependencies.findStickyComment(input))?.body).state;
+  return (await dependencies.loadState(input)) ?? createEmptyClearanceState();
 }
 
 async function buildWorkflowContext(
@@ -283,6 +339,7 @@ async function buildWorkflowContext(
     configDiagnostics,
     configValid,
     definitions,
+    dryRun: ownershipResolution.dryRun,
     hardErrors,
     identityResolution,
     reviewerAssignments,
@@ -508,15 +565,25 @@ function buildAssignmentRecords(
 function getNewAssignmentReviewers(
   existingAssignments: AssignmentRecord[],
   assignmentRecords: AssignmentRecord[],
+  requirements: ClearanceState["requirements"],
 ): string[] {
   const existingRequirementIdentities = new Set(
     existingAssignments.map((assignment) => assignment.requirementIdentity),
+  );
+  const pendingRequirementIdentities = new Set(
+    requirements
+      .filter((requirement) => requirement.status !== "approved")
+      .map((requirement) => requirement.identity),
   );
 
   return [
     ...new Set(
       assignmentRecords
-        .filter((assignment) => !existingRequirementIdentities.has(assignment.requirementIdentity))
+        .filter(
+          (assignment) =>
+            pendingRequirementIdentities.has(assignment.requirementIdentity) &&
+            !existingRequirementIdentities.has(assignment.requirementIdentity),
+        )
         .flatMap((assignment) => assignment.reviewers),
     ),
   ].toSorted(compareStrings);
@@ -641,10 +708,7 @@ function createWorkflowChecks(
 }
 
 async function runWorkflowSideEffects(
-  effects: Array<{
-    execute(): Promise<void>;
-    operation: WorkflowSideEffectFailure["operation"];
-  }>,
+  effects: WorkflowSideEffect[],
 ): Promise<WorkflowSideEffectFailure[]> {
   const results = await Promise.all(
     effects.map(async (effect): Promise<WorkflowSideEffectFailure | undefined> => {

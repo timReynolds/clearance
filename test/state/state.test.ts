@@ -83,6 +83,17 @@ describe("Clearance state", () => {
     expect(markdown).toContain("Review clearance is granted by @clearance override.");
     expect(markdown).toContain("Override activated by @clearance override command by `repo-admin`");
   });
+
+  it("renders a dry-run notice from persisted state", () => {
+    const state: ClearanceState = {
+      ...exampleState(),
+      dryRun: true,
+    };
+    const markdown = renderClearanceComment(state);
+
+    expect(markdown).toContain("Dry run mode is active.");
+    expect(parseClearanceState(markdown).state).toEqual(state);
+  });
 });
 
 function exampleState(): ClearanceState {

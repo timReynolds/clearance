@@ -63,8 +63,6 @@ Private keys may contain escaped newlines. The app normalizes `\n` sequences at 
 
 `DATABASE_URL` should point at your Supabase Postgres database. For a long-running host such as Fly or Cloudflare Containers, prefer a direct Supabase Postgres connection or Supavisor session mode. Leave `DATABASE_PREPARE_STATEMENTS=false` unless you know the connection path supports prepared statements.
 
-If `DATABASE_URL` is not set, Clearance falls back to the original sticky-comment-only state storage.
-
 ## 6. Apply Database Migrations
 
 Initialize local Supabase services when needed:
@@ -175,8 +173,8 @@ Open a pull request with a matching `OWNERS.toml` rule. Clearance should create 
 
 ## Operational Notes
 
-- Clearance stores state in Supabase Postgres when `DATABASE_URL` is configured and still renders the sticky PR comment for GitHub users.
-- The hidden V1 JSON block in the sticky comment remains as a compatibility fallback.
+- Clearance stores state in Supabase Postgres and still renders the sticky PR comment for GitHub users.
+- The hidden V1 JSON block in the sticky comment mirrors persisted state for GitHub visibility.
 - The current HTTP service handles PR and review webhook workflows.
-- When `DATABASE_URL` is configured, GitHub write side effects are queued in `clearance.outbox_jobs`; schedule `npm run start:outbox` with your platform scheduler or set `OUTBOX_POLL_INTERVAL_MS` to run it as a polling worker process.
+- GitHub write side effects are queued in `clearance.outbox_jobs`; schedule `npm run start:outbox` with your platform scheduler or set `OUTBOX_POLL_INTERVAL_MS` to run it as a polling worker process.
 - Escalation runs as a commandable sweep over repositories already tracked in the database; schedule `npm run start:escalate` with your platform scheduler.

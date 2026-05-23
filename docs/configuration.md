@@ -18,6 +18,7 @@ require = [
 
 ```toml
 inherit = true
+dry_run = true
 
 [escalation]
 warn_after = "4h"
@@ -50,6 +51,10 @@ teams = ["@org/repo-admins"]
 ### `inherit`
 
 Optional boolean. Defaults to `true`. When `false`, Clearance stops collecting parent ownership files once this file is reached.
+
+### `dry_run`
+
+Optional boolean. Defaults to `false`. When `true`, Clearance reports matching requirements in the sticky PR comment but does not request reviewers, set statuses, send notification comments, or run escalation side effects.
 
 ### `[escalation]`
 
@@ -119,8 +124,10 @@ On PR open, reopen, ready-for-review, or synchronize, Clearance:
 2. Validates configuration and GitHub identities.
 3. Resolves changed files to review requirements.
 4. Assigns reviewers.
-5. Persists Clearance state when database storage is configured.
+5. Persists Clearance state in the database.
 6. Writes or updates one sticky Clearance comment.
 7. Sets `clearance/config` and `clearance/review` statuses.
+
+When `dry_run = true` is set in an applicable `OWNERS.toml`, Clearance still writes the sticky comment but skips enforcement side effects.
 
 On review submission, Clearance records approvals against the current head SHA. On synchronize, approvals are invalidated only when relevant files changed.

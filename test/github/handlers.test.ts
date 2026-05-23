@@ -9,7 +9,7 @@ import {
   type GithubInstallationClientFactory,
   type GithubWorkflowOctokit,
 } from "../../src/github/handlers.js";
-import { parseClearanceState } from "../../src/state/index.js";
+import { parseClearanceState, type ClearanceState } from "../../src/state/index.js";
 
 type GetBlob = GithubWorkflowOctokit["rest"]["git"]["getBlob"];
 type GetTree = GithubWorkflowOctokit["rest"]["git"]["getTree"];
@@ -22,7 +22,6 @@ type ListComments = GithubWorkflowOctokit["rest"]["issues"]["listComments"];
 type CreateComment = GithubWorkflowOctokit["rest"]["issues"]["createComment"];
 type CreateCommitStatus = GithubWorkflowOctokit["rest"]["repos"]["createCommitStatus"];
 type ListCommits = GithubWorkflowOctokit["rest"]["repos"]["listCommits"];
-type RequestReviewers = GithubWorkflowOctokit["rest"]["pulls"]["requestReviewers"];
 type CompareCommits = GithubWorkflowOctokit["rest"]["repos"]["compareCommitsWithBasehead"];
 type GetUser = GithubWorkflowOctokit["rest"]["users"]["getByUsername"];
 type SearchIssues = GithubWorkflowOctokit["rest"]["search"]["issuesAndPullRequests"];
@@ -37,12 +36,17 @@ describe("registerGithubHandlers", () => {
     vi.spyOn(console, "info").mockImplementation(() => {});
     const webhooks = new Webhooks({ secret: "test-secret" });
     const octokit = createWorkflowOctokit();
+    const stateStore = createStateStore();
 
-    registerGithubHandlers(webhooks, {
-      getInstallationOctokit: vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
-        async () => octokit,
-      ),
-    });
+    registerGithubHandlers(
+      webhooks,
+      {
+        getInstallationOctokit: vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
+          async () => octokit,
+        ),
+      },
+      { stateStore },
+    );
 
     const payload = createPullRequestPayload("opened");
     const serializedPayload = JSON.stringify(payload);
@@ -61,36 +65,92 @@ describe("registerGithubHandlers", () => {
       repo: "clearance",
       tree_sha: "head-sha",
     });
-    expect(octokit.rest.pulls.requestReviewers).toHaveBeenCalledWith({
-      owner: "acme",
-      pull_number: 42,
-      repo: "clearance",
-      reviewers: ["alice"],
-    });
-    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+    expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
+    expect(octokit.rest.repos.createCommitStatus).not.toHaveBeenCalled();
+    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: expect.stringContaining("<!-- clearance-state:v1"),
-        issue_number: 42,
+        payload: expect.objectContaining({
+          body: expect.stringContaining("<!-- clearance-state:v1"),
+          installationId: 123,
+          pullNumber: 42,
+        }),
+        type: "github.upsert-comment",
       }),
     );
-    expect(octokit.rest.repos.createCommitStatus).toHaveBeenCalledWith(
+    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
       expect.objectContaining({
-        context: "clearance/config",
-        state: "success",
+        payload: expect.objectContaining({
+          reviewers: ["alice"],
+        }),
+        type: "github.request-reviewers",
       }),
     );
+    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          decisions: expect.arrayContaining([
+            expect.objectContaining({
+              context: "clearance/config",
+              state: "success",
+            }),
+          ]),
+        }),
+        type: "github.set-statuses",
+      }),
+    );
+  });
+
+  it("uses dry-run mode to update only the sticky comment", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const webhooks = new Webhooks({ secret: "test-secret" });
+    const octokit = createWorkflowOctokit({ dryRun: true });
+    const stateStore = createStateStore();
+
+    registerGithubHandlers(
+      webhooks,
+      {
+        getInstallationOctokit: vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
+          async () => octokit,
+        ),
+      },
+      { stateStore },
+    );
+
+    await webhooks.receive({
+      id: "delivery-id",
+      name: "pull_request",
+      payload: createPullRequestPayload("opened"),
+    } as unknown as EmitterWebhookEvent);
+
+    expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
+    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledTimes(1);
+    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          body: expect.stringContaining("Dry run mode is active."),
+          pullNumber: 42,
+        }),
+        type: "github.upsert-comment",
+      }),
+    );
+    expect(octokit.rest.repos.createCommitStatus).not.toHaveBeenCalled();
   });
 
   it("uses GitHub compare data for synchronize scoped invalidation", async () => {
     vi.spyOn(console, "info").mockImplementation(() => {});
     const webhooks = new Webhooks({ secret: "test-secret" });
     const octokit = createWorkflowOctokit();
+    const stateStore = createStateStore();
 
-    registerGithubHandlers(webhooks, {
-      getInstallationOctokit: vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
-        async () => octokit,
-      ),
-    });
+    registerGithubHandlers(
+      webhooks,
+      {
+        getInstallationOctokit: vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
+          async () => octokit,
+        ),
+      },
+      { stateStore },
+    );
 
     await webhooks.receive({
       id: "delivery-id",
@@ -109,12 +169,17 @@ describe("registerGithubHandlers", () => {
     vi.spyOn(console, "info").mockImplementation(() => {});
     const webhooks = new Webhooks({ secret: "test-secret" });
     const octokit = createWorkflowOctokit();
+    const stateStore = createStateStore();
 
-    registerGithubHandlers(webhooks, {
-      getInstallationOctokit: vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
-        async () => octokit,
-      ),
-    });
+    registerGithubHandlers(
+      webhooks,
+      {
+        getInstallationOctokit: vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
+          async () => octokit,
+        ),
+      },
+      { stateStore },
+    );
 
     await webhooks.receive({
       id: "delivery-id",
@@ -128,11 +193,14 @@ describe("registerGithubHandlers", () => {
       repo: "clearance",
       tree_sha: "head-sha",
     });
-    expect(octokit.rest.pulls.requestReviewers).not.toHaveBeenCalled();
-    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+    expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
+    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: expect.stringContaining("<!-- clearance-state:v1"),
-        issue_number: 42,
+        payload: expect.objectContaining({
+          body: expect.stringContaining("<!-- clearance-state:v1"),
+          pullNumber: 42,
+        }),
+        type: "github.upsert-comment",
       }),
     );
   });
@@ -142,8 +210,9 @@ describe("registerGithubHandlers", () => {
     const getInstallationOctokit = vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
       async () => createWorkflowOctokit(),
     );
+    const stateStore = createStateStore();
 
-    registerGithubHandlers(webhooks, { getInstallationOctokit });
+    registerGithubHandlers(webhooks, { getInstallationOctokit }, { stateStore });
 
     await webhooks.receive({
       id: "delivery-id-1",
@@ -163,12 +232,17 @@ describe("registerGithubHandlers", () => {
     vi.spyOn(console, "info").mockImplementation(() => {});
     const webhooks = new Webhooks({ secret: "test-secret" });
     const octokit = createWorkflowOctokit();
+    const stateStore = createStateStore();
 
-    registerGithubHandlers(webhooks, {
-      getInstallationOctokit: vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
-        async () => octokit,
-      ),
-    });
+    registerGithubHandlers(
+      webhooks,
+      {
+        getInstallationOctokit: vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
+          async () => octokit,
+        ),
+      },
+      { stateStore },
+    );
 
     await webhooks.receive({
       id: "delivery-id-activate",
@@ -181,29 +255,28 @@ describe("registerGithubHandlers", () => {
       pull_number: 42,
       repo: "clearance",
     });
-    expect(octokit.rest.pulls.requestReviewers).not.toHaveBeenCalled();
-    expect(octokit.rest.repos.createCommitStatus).toHaveBeenCalledWith(
+    expect(octokit.rest.repos.createCommitStatus).not.toHaveBeenCalled();
+    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
       expect.objectContaining({
-        context: "clearance/review",
-        state: "success",
+        payload: expect.objectContaining({
+          decisions: expect.arrayContaining([
+            expect.objectContaining({
+              context: "clearance/review",
+              state: "success",
+            }),
+          ]),
+        }),
+        type: "github.set-statuses",
       }),
     );
 
-    const createdBody = vi.mocked(octokit.rest.issues.createComment).mock.calls[0]?.[0].body;
+    const createdBody = stateStore.jobs.find((job) => job.type === "github.upsert-comment")?.payload
+      .body;
     expect(createdBody).toEqual(expect.stringContaining("@clearance override"));
-    expect(parseClearanceState(createdBody).state.override).toEqual({
+    expect(parseClearanceState(String(createdBody)).state.override).toEqual({
       actor: "admin",
       at: expect.any(String),
       commentId: 200,
-    });
-
-    vi.mocked(octokit.rest.issues.listComments).mockResolvedValueOnce({
-      data: [
-        {
-          body: createdBody,
-          id: 100,
-        },
-      ],
     });
 
     await webhooks.receive({
@@ -212,12 +285,20 @@ describe("registerGithubHandlers", () => {
       payload: createIssueCommentPayload("@clearance override revoke", 201),
     } as unknown as EmitterWebhookEvent);
 
-    const updatedBody = vi.mocked(octokit.rest.issues.updateComment).mock.calls[0]?.[0].body;
-    expect(parseClearanceState(updatedBody).state.override).toBeUndefined();
-    expect(octokit.rest.repos.createCommitStatus).toHaveBeenCalledWith(
+    const latestUpsertBody = stateStore.jobs.findLast((job) => job.type === "github.upsert-comment")
+      ?.payload.body;
+    expect(parseClearanceState(String(latestUpsertBody)).state.override).toBeUndefined();
+    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
       expect.objectContaining({
-        context: "clearance/review",
-        state: "pending",
+        payload: expect.objectContaining({
+          decisions: expect.arrayContaining([
+            expect.objectContaining({
+              context: "clearance/review",
+              state: "pending",
+            }),
+          ]),
+        }),
+        type: "github.set-statuses",
       }),
     );
   });
@@ -228,10 +309,11 @@ describe("registerGithubHandlers", () => {
     const getInstallationOctokit = vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
       async () => createWorkflowOctokit(),
     );
+    const stateStore = createStateStore();
     const payload = createPullRequestPayload("opened");
     delete payload.installation;
 
-    registerGithubHandlers(webhooks, { getInstallationOctokit });
+    registerGithubHandlers(webhooks, { getInstallationOctokit }, { stateStore });
 
     await webhooks.receive({
       id: "delivery-id",
@@ -255,15 +337,7 @@ describe("registerGithubHandlers", () => {
     const getInstallationOctokit = vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
       async () => createWorkflowOctokit(),
     );
-    const stateStore: GithubHandlerStateStore = {
-      beginWebhookDelivery: vi.fn<NonNullable<GithubHandlerStateStore["beginWebhookDelivery"]>>(
-        async () => false,
-      ),
-      loadPullRequestState: vi.fn<GithubHandlerStateStore["loadPullRequestState"]>(
-        async () => undefined,
-      ),
-      savePullRequestState: vi.fn<GithubHandlerStateStore["savePullRequestState"]>(async () => {}),
-    };
+    const stateStore = createStateStore({ beginWebhookDelivery: async () => false });
 
     registerGithubHandlers(webhooks, { getInstallationOctokit }, { stateStore });
 
@@ -282,25 +356,11 @@ describe("registerGithubHandlers", () => {
     expect(getInstallationOctokit).not.toHaveBeenCalled();
   });
 
-  it("enqueues GitHub side effects when an outbox store is configured", async () => {
+  it("enqueues GitHub side effects through the state store", async () => {
     vi.spyOn(console, "info").mockImplementation(() => {});
     const webhooks = new Webhooks({ secret: "test-secret" });
     const octokit = createWorkflowOctokit();
-    const stateStore: GithubHandlerStateStore = {
-      beginWebhookDelivery: vi.fn<NonNullable<GithubHandlerStateStore["beginWebhookDelivery"]>>(
-        async () => true,
-      ),
-      enqueueOutboxJob: vi.fn<NonNullable<GithubHandlerStateStore["enqueueOutboxJob"]>>(
-        async () => {},
-      ),
-      loadPullRequestState: vi.fn<GithubHandlerStateStore["loadPullRequestState"]>(
-        async () => undefined,
-      ),
-      recordWebhookDelivery: vi.fn<NonNullable<GithubHandlerStateStore["recordWebhookDelivery"]>>(
-        async () => {},
-      ),
-      savePullRequestState: vi.fn<GithubHandlerStateStore["savePullRequestState"]>(async () => {}),
-    };
+    const stateStore = createStateStore();
 
     registerGithubHandlers(
       webhooks,
@@ -319,7 +379,6 @@ describe("registerGithubHandlers", () => {
     } as unknown as EmitterWebhookEvent);
 
     expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
-    expect(octokit.rest.pulls.requestReviewers).not.toHaveBeenCalled();
     expect(octokit.rest.repos.createCommitStatus).not.toHaveBeenCalled();
     expect(stateStore.enqueueOutboxJob).toHaveBeenCalledTimes(3);
     expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
@@ -355,7 +414,44 @@ describe("registerGithubHandlers", () => {
   });
 });
 
-function createWorkflowOctokit(): GithubWorkflowOctokit {
+type TestStateStore = GithubHandlerStateStore & {
+  jobs: Array<Parameters<GithubHandlerStateStore["enqueueOutboxJob"]>[0]>;
+  savedState?: ClearanceState;
+};
+
+function createStateStore(
+  options: {
+    beginWebhookDelivery?: GithubHandlerStateStore["beginWebhookDelivery"];
+    initialState?: ClearanceState;
+  } = {},
+): TestStateStore {
+  const jobs: TestStateStore["jobs"] = [];
+  let savedState = options.initialState;
+  const store: TestStateStore = {
+    beginWebhookDelivery: vi.fn<GithubHandlerStateStore["beginWebhookDelivery"]>(
+      options.beginWebhookDelivery ?? (async () => true),
+    ),
+    enqueueOutboxJob: vi.fn<GithubHandlerStateStore["enqueueOutboxJob"]>(async (job) => {
+      jobs.push(job);
+    }),
+    jobs,
+    loadPullRequestState: vi.fn<GithubHandlerStateStore["loadPullRequestState"]>(
+      async () => savedState,
+    ),
+    recordWebhookDelivery: vi.fn<GithubHandlerStateStore["recordWebhookDelivery"]>(async () => {}),
+    savePullRequestState: vi.fn<GithubHandlerStateStore["savePullRequestState"]>(
+      async (_input, state) => {
+        savedState = state;
+        store.savedState = state;
+      },
+    ),
+    savedState,
+  };
+
+  return store;
+}
+
+function createWorkflowOctokit(options: { dryRun?: boolean } = {}): GithubWorkflowOctokit {
   return {
     rest: {
       git: {
@@ -363,6 +459,7 @@ function createWorkflowOctokit(): GithubWorkflowOctokit {
           data: {
             content: Buffer.from(
               `
+${options.dryRun === true ? "dry_run = true\n" : ""}
 [[rule]]
 paths = ["src/**"]
 require = [{ from = "@org/platform", count = 1 }]
@@ -422,7 +519,6 @@ teams = ["@org/admins"]
         listReviews: vi.fn<ListReviews>(async () => ({
           data: [],
         })),
-        requestReviewers: vi.fn<RequestReviewers>(async () => ({})),
       },
       repos: {
         compareCommitsWithBasehead: vi.fn<CompareCommits>(async () => ({

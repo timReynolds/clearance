@@ -72,6 +72,7 @@ type RequireAnyParseResult =
 
 export const ownersConfigSchema = z
   .object({
+    dry_run: z.boolean().default(false),
     inherit: z.boolean().default(true),
     escalation: escalationSchema.optional(),
     rule: z.array(ruleSchema).default([]),

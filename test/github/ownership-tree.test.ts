@@ -110,6 +110,7 @@ require = [{ from = "@org/docs", count = 0 }]
     expect(tree.truncated).toBe(true);
     expect(tree.files.map((file) => file.path)).toEqual(["OWNERS.toml", "docs/OWNERS.toml"]);
     expect(tree.files[0]?.config).toEqual({
+      dry_run: false,
       inherit: true,
       notify: [],
       rule: [],

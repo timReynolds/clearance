@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { GithubIdentityResolution } from "../../src/github/index.js";
 import { parseOwnersToml, type OwnershipTree } from "../../src/owners/index.js";
-import { createEmptyClearanceState, renderClearanceComment } from "../../src/state/index.js";
+import {
+  createEmptyClearanceState,
+  parseClearanceState,
+  renderClearanceComment,
+  type ClearanceState,
+} from "../../src/state/index.js";
 import {
   processPullRequestChange,
   processSubmittedReview,
@@ -61,6 +66,59 @@ require = [{ from = "@org/platform", count = 1 }]
     );
     expect(dependencies.setStatuses).toHaveBeenCalledWith(input(), result.checks);
     expect(dependencies.requestReviewers).toHaveBeenCalledWith(input(), ["alice"]);
+  });
+
+  it("renders the comment only in dry-run mode", async () => {
+    const dependencies = createDependencies({
+      changedFiles: ["src/index.ts", "docs/readme.md"],
+      identityResolution: identityResolution(),
+      ownershipTree: ownershipTree(`
+dry_run = true
+
+[[rule]]
+paths = ["src/**"]
+require = [{ from = "@org/platform", count = 1 }]
+
+[[notify]]
+paths = ["docs/**"]
+users = ["@alice"]
+`),
+    });
+
+    const result = await processPullRequestChange(input(), dependencies);
+
+    expect(result.requestedReviewers).toEqual([]);
+    expect(result.checks[1]).toEqual({
+      context: "clearance/review",
+      description: "1 review requirement pending",
+      state: "pending",
+    });
+    expect(result.state.assignments).toEqual([]);
+    expect(result.state.requirements[0]?.assignedReviewers).toEqual(["alice"]);
+    expect(result.state.notificationsSent).toEqual([]);
+    expect(dependencies.upsertComment).toHaveBeenCalledWith(
+      input(),
+      expect.stringContaining("Dry run mode is active."),
+    );
+    expect(dependencies.setStatuses).not.toHaveBeenCalled();
+    expect(dependencies.requestReviewers).not.toHaveBeenCalled();
+    expect(dependencies.sendNotifications).not.toHaveBeenCalled();
+
+    const enforcingDependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      existingComment: dependencies.upsertedBody,
+      identityResolution: identityResolution(),
+      ownershipTree: ownershipTree(`
+[[rule]]
+paths = ["src/**"]
+require = [{ from = "@org/platform", count = 1 }]
+`),
+    });
+
+    const enforcingResult = await processPullRequestChange(input(), enforcingDependencies);
+
+    expect(enforcingResult.requestedReviewers).toEqual(["alice"]);
+    expect(enforcingDependencies.requestReviewers).toHaveBeenCalledWith(input(), ["alice"]);
   });
 
   it("uses reviewer signals before assigning reviewers", async () => {
@@ -138,18 +196,10 @@ require = [{ from = "@org/platform", count = 1 }]
     expect(dependencies.requestReviewers).toHaveBeenCalledWith(input(), []);
   });
 
-  it("prefers persisted state over sticky comment state when a store is configured", async () => {
+  it("loads previous state from persistence", async () => {
     const dependencies = createDependencies({
       changedFiles: ["src/index.ts"],
-      identityResolution: identityResolution(),
-      ownershipTree: ownershipTree(`
-[[rule]]
-paths = ["src/**"]
-require = [{ from = "@org/platform", count = 1 }]
-`),
-    });
-    dependencies.loadState = vi.fn<NonNullable<PullRequestWorkflowDependencies["loadState"]>>(
-      async () => ({
+      existingState: {
         ...createEmptyClearanceState(),
         assignments: [
           {
@@ -158,15 +208,18 @@ require = [{ from = "@org/platform", count = 1 }]
             reviewers: ["alice"],
           },
         ],
-      }),
-    );
-    dependencies.saveState = vi.fn<NonNullable<PullRequestWorkflowDependencies["saveState"]>>(
-      async () => {},
-    );
+      },
+      identityResolution: identityResolution(),
+      ownershipTree: ownershipTree(`
+[[rule]]
+paths = ["src/**"]
+require = [{ from = "@org/platform", count = 1 }]
+`),
+    });
 
     const result = await processPullRequestChange(input(), dependencies);
 
-    expect(dependencies.findStickyComment).not.toHaveBeenCalled();
+    expect(dependencies.loadState).toHaveBeenCalledWith(input());
     expect(result.requestedReviewers).toEqual([]);
     expect(result.state.assignments[0]?.assignedAt).toBe("2026-05-17T10:00:00.000Z");
     expect(dependencies.saveState).toHaveBeenCalledWith(input(), result.state);
@@ -285,6 +338,54 @@ require = [{ from = "@org/platform", count = 1 }]
       state: "success",
     });
     expect(reviewDependencies.requestReviewers).not.toHaveBeenCalled();
+  });
+
+  it("updates the comment only for submitted reviews in dry-run mode", async () => {
+    const dependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      existingComment: approvedComment("head-sha"),
+      identityResolution: identityResolution(),
+      ownershipTree: ownershipTree(`
+dry_run = true
+
+[[rule]]
+paths = ["src/**"]
+require = [{ from = "@org/platform", count = 1 }]
+`),
+    });
+
+    const result = await processSubmittedReview(
+      {
+        ...input(),
+        reviewState: "approved",
+        reviewer: "alice",
+      },
+      dependencies,
+    );
+
+    expect(result.checks[1]?.state).toBe("success");
+    expect(dependencies.upsertComment).toHaveBeenCalledWith(
+      expect.objectContaining({ pullNumber: 42 }),
+      expect.stringContaining("Dry run mode is active."),
+    );
+    expect(dependencies.setStatuses).not.toHaveBeenCalled();
+    expect(dependencies.requestReviewers).not.toHaveBeenCalled();
+
+    const enforcingDependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      existingComment: dependencies.upsertedBody,
+      identityResolution: identityResolution(),
+      ownershipTree: ownershipTree(`
+[[rule]]
+paths = ["src/**"]
+require = [{ from = "@org/platform", count = 1 }]
+`),
+    });
+
+    const enforcingResult = await processPullRequestChange(input(), enforcingDependencies);
+
+    expect(enforcingResult.requestedReviewers).toEqual([]);
+    expect(enforcingDependencies.requestReviewers).toHaveBeenCalledWith(input(), []);
   });
 
   it("sets failing checks and skips reviewer requests for invalid config", async () => {
@@ -722,19 +823,26 @@ function input(): PullRequestWorkflowInput {
 function createDependencies(options: {
   changedFiles: string[];
   existingComment?: string;
+  existingState?: ClearanceState;
   identityResolution: GithubIdentityResolution;
   ownershipTree: OwnershipTree;
-}): PullRequestWorkflowDependencies & { upsertedBody?: string } {
-  const dependencies: PullRequestWorkflowDependencies & { upsertedBody?: string } = {
-    findStickyComment: vi.fn<PullRequestWorkflowDependencies["findStickyComment"]>(async () =>
-      options.existingComment === undefined ? undefined : { body: options.existingComment },
-    ),
+}): PullRequestWorkflowDependencies & { savedState?: ClearanceState; upsertedBody?: string } {
+  let storedState =
+    options.existingState ??
+    (options.existingComment === undefined
+      ? undefined
+      : parseClearanceState(options.existingComment).state);
+  const dependencies: PullRequestWorkflowDependencies & {
+    savedState?: ClearanceState;
+    upsertedBody?: string;
+  } = {
     listChangedFiles: vi.fn<PullRequestWorkflowDependencies["listChangedFiles"]>(
       async () => options.changedFiles,
     ),
     listReviewerSignals: vi.fn<PullRequestWorkflowDependencies["listReviewerSignals"]>(
       async () => [],
     ),
+    loadState: vi.fn<PullRequestWorkflowDependencies["loadState"]>(async () => storedState),
     loadOwnershipTree: vi.fn<PullRequestWorkflowDependencies["loadOwnershipTree"]>(
       async () => options.ownershipTree,
     ),
@@ -742,6 +850,10 @@ function createDependencies(options: {
     resolveIdentities: vi.fn<PullRequestWorkflowDependencies["resolveIdentities"]>(
       async () => options.identityResolution,
     ),
+    saveState: vi.fn<PullRequestWorkflowDependencies["saveState"]>(async (_input, state) => {
+      storedState = state;
+      dependencies.savedState = state;
+    }),
     sendNotifications: vi.fn<PullRequestWorkflowDependencies["sendNotifications"]>(async () => {}),
     setStatuses: vi.fn<PullRequestWorkflowDependencies["setStatuses"]>(async () => {}),
     upsertComment: vi.fn<PullRequestWorkflowDependencies["upsertComment"]>(async (_input, body) => {

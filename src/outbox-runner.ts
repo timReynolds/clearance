@@ -10,10 +10,6 @@ dotenv.config();
 
 const env = readEnv();
 
-if (env.DATABASE_URL === undefined) {
-  throw new Error("DATABASE_URL is required to process the outbox");
-}
-
 const app = new App({
   appId: env.GITHUB_APP_ID,
   privateKey: env.GITHUB_PRIVATE_KEY,

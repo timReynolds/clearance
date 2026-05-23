@@ -17,11 +17,6 @@ const app = new App({
     secret: env.GITHUB_WEBHOOK_SECRET,
   },
 });
-
-if (env.DATABASE_URL === undefined) {
-  throw new Error("DATABASE_URL is required to run escalation sweeps");
-}
-
 const databaseClient = createDatabaseClient({
   maxConnections: env.DATABASE_MAX_CONNECTIONS,
   prepareStatements: env.DATABASE_PREPARE_STATEMENTS,

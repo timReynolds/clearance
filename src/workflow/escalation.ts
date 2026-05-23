@@ -4,7 +4,6 @@ import {
   type EscalationRequirement,
 } from "../escalation/index.js";
 import {
-  parseClearanceState,
   renderClearanceComment,
   type ClearanceState,
   type ClearanceStateRequirement,
@@ -12,16 +11,15 @@ import {
 } from "../state/index.js";
 
 export type EscalationWorkflowInput = {
-  existingCommentBody?: string;
-  existingState?: ClearanceState;
   now: string;
   requirements: EscalationRequirement[];
+  state: ClearanceState;
 };
 
 export type EscalationWorkflowDependencies = {
   postComment(body: string): Promise<void>;
   requestReviewers(reviewers: string[]): Promise<void>;
-  saveState?(state: ClearanceState): Promise<void>;
+  saveState(state: ClearanceState): Promise<void>;
   upsertComment(body: string): Promise<void>;
 };
 
@@ -40,15 +38,18 @@ export async function processEscalationRun(
   input: EscalationWorkflowInput,
   dependencies: EscalationWorkflowDependencies,
 ): Promise<EscalationWorkflowResult> {
-  const state = input.existingState ?? parseClearanceState(input.existingCommentBody).state;
-  const actions = evaluateEscalations({
-    existingEvents: [...state.escalations, ...state.fallbackNotifications],
-    now: input.now,
-    requirements: input.requirements,
-  });
+  const state = input.state;
+  const dryRun = state.dryRun === true;
+  const actions = dryRun
+    ? []
+    : evaluateEscalations({
+        existingEvents: [...state.escalations, ...state.fallbackNotifications],
+        now: input.now,
+        requirements: input.requirements,
+      });
   const nextState = applyEscalationActions(state, actions, input.now);
 
-  await dependencies.saveState?.(nextState);
+  await dependencies.saveState(nextState);
 
   const sideEffectFailures = await runEscalationSideEffects([
     {

@@ -1,18 +1,13 @@
 import type { Webhooks } from "@octokit/webhooks";
 
 import {
-  findStickyClearanceComment,
   listChangedFilesBetweenCommits,
   listChangedPullRequestFiles,
   listPullRequestReviewerSignals,
   loadOwnershipTree,
   enqueueGithubOutboxJob,
   githubOutboxJobTypes,
-  requestPullRequestReviewers,
   resolveGithubIdentities,
-  sendPullRequestNotifications,
-  setCommitStatuses,
-  upsertStickyClearanceComment,
   type CommitCompareOctokit,
   type GithubIdentityOctokit,
   type GithubStatusesOctokit,
@@ -20,7 +15,6 @@ import {
   type NotificationCommentOctokit,
   type OwnershipTreeOctokit,
   type PullRequestFilesOctokit,
-  type PullRequestReviewersOctokit,
   type ReviewerSignalsOctokit,
   type StickyCommentOctokit,
 } from "./index.js";
@@ -42,7 +36,6 @@ export type GithubWorkflowOctokit = GithubIdentityOctokit &
   OwnershipTreeOctokit &
   PullRequestDetailsOctokit &
   PullRequestFilesOctokit &
-  PullRequestReviewersOctokit &
   ReviewerSignalsOctokit &
   StickyCommentOctokit;
 
@@ -69,17 +62,17 @@ export type GithubInstallationClientFactory = {
 };
 
 export type GithubHandlerStateStore = {
-  beginWebhookDelivery?(input: {
+  beginWebhookDelivery(input: {
     action?: string;
     deliveryId: string;
     event: string;
     payload?: unknown;
   }): Promise<boolean>;
-  enqueueOutboxJob?: GithubOutboxStore["enqueueOutboxJob"];
+  enqueueOutboxJob: GithubOutboxStore["enqueueOutboxJob"];
   loadPullRequestState(
     input: Pick<PullRequestWorkflowInput, "owner" | "pullNumber" | "repo">,
   ): Promise<ClearanceState | undefined>;
-  recordWebhookDelivery?(input: {
+  recordWebhookDelivery(input: {
     action?: string;
     deliveryId: string;
     error?: string;
@@ -91,13 +84,13 @@ export type GithubHandlerStateStore = {
 };
 
 export type GithubHandlerOptions = {
-  stateStore?: GithubHandlerStateStore;
+  stateStore: GithubHandlerStateStore;
 };
 
 export function registerGithubHandlers(
   webhooks: Webhooks,
-  installationClientFactory?: GithubInstallationClientFactory,
-  options: GithubHandlerOptions = {},
+  installationClientFactory: GithubInstallationClientFactory,
+  options: GithubHandlerOptions,
 ): void {
   webhooks.on("pull_request", async ({ id, name, payload }) => {
     const shouldProcess = await beginWebhookDelivery(options, id, name, payload.action, payload);
@@ -118,7 +111,12 @@ export function registerGithubHandlers(
       const author = payload.pull_request.user?.login;
       const sender = payload.sender?.login;
 
-      if (octokit !== undefined && author !== undefined && sender !== undefined) {
+      if (
+        octokit !== undefined &&
+        author !== undefined &&
+        sender !== undefined &&
+        installationId !== undefined
+      ) {
         const input = await createPullRequestWorkflowInput(
           {
             author,
@@ -191,7 +189,12 @@ export function registerGithubHandlers(
       const author = payload.pull_request.user?.login;
       const reviewer = payload.review.user?.login;
       const sender = payload.sender.login;
-      if (octokit !== undefined && author !== undefined && reviewer !== undefined) {
+      if (
+        octokit !== undefined &&
+        author !== undefined &&
+        reviewer !== undefined &&
+        installationId !== undefined
+      ) {
         const input = await createPullRequestWorkflowInput(
           {
             author,
@@ -275,7 +278,7 @@ export function registerGithubHandlers(
       const octokit = await getPayloadOctokit(payload, installationClientFactory);
       const sender = payload.sender?.login;
 
-      if (octokit !== undefined && sender !== undefined) {
+      if (octokit !== undefined && sender !== undefined && installationId !== undefined) {
         const pullRequest = await getPullRequestDetails(octokit, {
           owner: payload.repository.owner.login,
           pullNumber,
@@ -424,17 +427,9 @@ function getLabelNames(labels: Array<string | { name?: string }>): string[] {
 function buildWorkflowDependencies(
   octokit: GithubWorkflowOctokit,
   options: GithubHandlerOptions,
-  installationId: number | undefined,
+  installationId: number,
 ): PullRequestWorkflowDependencies {
-  const outbox = getGithubOutbox(options, installationId);
-
   return {
-    findStickyComment: async (input) =>
-      findStickyClearanceComment(octokit, {
-        owner: input.owner,
-        pullNumber: input.pullNumber,
-        repo: input.repo,
-      }),
     listChangedFiles: async (input) =>
       listChangedPullRequestFiles(octokit, {
         owner: input.owner,
@@ -450,7 +445,7 @@ function buildWorkflowDependencies(
         reviewers,
       }),
     loadState: async (input) =>
-      options.stateStore?.loadPullRequestState({
+      options.stateStore.loadPullRequestState({
         owner: input.owner,
         pullNumber: input.pullNumber,
         repo: input.repo,
@@ -462,125 +457,68 @@ function buildWorkflowDependencies(
         repo: input.repo,
       }),
     requestReviewers: async (input, reviewers) => {
-      if (outbox !== undefined && reviewers.length > 0) {
-        await enqueueGithubOutboxJob(outbox.store, {
-          payload: {
-            installationId: outbox.installationId,
-            owner: input.owner,
-            pullNumber: input.pullNumber,
-            repo: input.repo,
-            reviewers,
-          },
-          type: githubOutboxJobTypes.requestReviewers,
-        });
+      if (reviewers.length === 0) {
         return;
       }
 
-      await requestPullRequestReviewers(
-        octokit,
-        {
+      await enqueueGithubOutboxJob(options.stateStore, {
+        payload: {
+          installationId,
           owner: input.owner,
           pullNumber: input.pullNumber,
           repo: input.repo,
+          reviewers,
         },
-        reviewers,
-      );
+        type: githubOutboxJobTypes.requestReviewers,
+      });
     },
     resolveIdentities: async (tree) => resolveGithubIdentities(octokit, tree.files),
     saveState: async (input, state) => {
-      await options.stateStore?.savePullRequestState(input, state);
+      await options.stateStore.savePullRequestState(input, state);
     },
     sendNotifications: async (input, notifications) => {
-      if (outbox !== undefined && notifications.length > 0) {
-        await enqueueGithubOutboxJob(outbox.store, {
-          payload: {
-            installationId: outbox.installationId,
-            notifications,
-            owner: input.owner,
-            pullNumber: input.pullNumber,
-            repo: input.repo,
-          },
-          type: githubOutboxJobTypes.sendNotifications,
-        });
+      if (notifications.length === 0) {
         return;
       }
 
-      await sendPullRequestNotifications(
-        octokit,
-        {
+      await enqueueGithubOutboxJob(options.stateStore, {
+        payload: {
+          installationId,
+          notifications,
           owner: input.owner,
           pullNumber: input.pullNumber,
           repo: input.repo,
         },
-        notifications,
-      );
+        type: githubOutboxJobTypes.sendNotifications,
+      });
     },
     setStatuses: async (input, decisions) => {
-      if (outbox !== undefined && decisions.length > 0) {
-        await enqueueGithubOutboxJob(outbox.store, {
-          payload: {
-            decisions,
-            installationId: outbox.installationId,
-            owner: input.owner,
-            repo: input.repo,
-            sha: input.headSha,
-          },
-          type: githubOutboxJobTypes.setStatuses,
-        });
+      if (decisions.length === 0) {
         return;
       }
 
-      await setCommitStatuses(
-        octokit,
-        {
+      await enqueueGithubOutboxJob(options.stateStore, {
+        payload: {
+          decisions,
+          installationId,
           owner: input.owner,
           repo: input.repo,
           sha: input.headSha,
         },
-        decisions,
-      );
+        type: githubOutboxJobTypes.setStatuses,
+      });
     },
     upsertComment: async (input, body) => {
-      if (outbox !== undefined) {
-        await enqueueGithubOutboxJob(outbox.store, {
-          payload: {
-            body,
-            installationId: outbox.installationId,
-            owner: input.owner,
-            pullNumber: input.pullNumber,
-            repo: input.repo,
-          },
-          type: githubOutboxJobTypes.upsertComment,
-        });
-        return;
-      }
-
-      await upsertStickyClearanceComment(
-        octokit,
-        {
+      await enqueueGithubOutboxJob(options.stateStore, {
+        payload: {
+          body,
+          installationId,
           owner: input.owner,
           pullNumber: input.pullNumber,
           repo: input.repo,
         },
-        body,
-      );
-    },
-  };
-}
-
-function getGithubOutbox(
-  options: GithubHandlerOptions,
-  installationId: number | undefined,
-): { installationId: number; store: GithubOutboxStore } | undefined {
-  if (installationId === undefined || options.stateStore?.enqueueOutboxJob === undefined) {
-    return undefined;
-  }
-
-  return {
-    installationId,
-    store: {
-      enqueueOutboxJob: (input) =>
-        options.stateStore?.enqueueOutboxJob?.(input) ?? Promise.resolve(),
+        type: githubOutboxJobTypes.upsertComment,
+      });
     },
   };
 }
@@ -596,17 +534,12 @@ async function beginWebhookDelivery(
     return true;
   }
 
-  if (options.stateStore?.beginWebhookDelivery !== undefined) {
-    return options.stateStore.beginWebhookDelivery({
-      action,
-      deliveryId,
-      event,
-      payload,
-    });
-  }
-
-  await recordWebhookDelivery(options, deliveryId, event, action, payload, "processing");
-  return true;
+  return options.stateStore.beginWebhookDelivery({
+    action,
+    deliveryId,
+    event,
+    payload,
+  });
 }
 
 async function recordWebhookDelivery(
@@ -622,7 +555,7 @@ async function recordWebhookDelivery(
     return;
   }
 
-  await options.stateStore?.recordWebhookDelivery?.({
+  await options.stateStore.recordWebhookDelivery({
     action,
     deliveryId,
     error,
@@ -634,10 +567,10 @@ async function recordWebhookDelivery(
 
 async function getPayloadOctokit(
   payload: unknown,
-  installationClientFactory: GithubInstallationClientFactory | undefined,
+  installationClientFactory: GithubInstallationClientFactory,
 ): Promise<GithubWorkflowOctokit | undefined> {
   const installationId = getInstallationId(payload);
-  if (installationClientFactory === undefined || installationId === undefined) {
+  if (installationId === undefined) {
     return undefined;
   }
 

@@ -1,31 +1,21 @@
 import { buildEscalationRequirementsFromState, processEscalationRun } from "../workflow/index.js";
-import { parseClearanceState, type ClearanceState } from "../state/index.js";
-import type { NotificationCommentOctokit } from "./notifications.js";
+import type { ClearanceState } from "../state/index.js";
 import { enqueueGithubOutboxJob, githubOutboxJobTypes, type GithubOutboxStore } from "./outbox.js";
 import {
   listOpenPullRequests,
   type OpenPullRequest,
   type OpenPullRequestsOctokit,
 } from "./open-pull-requests.js";
-import { requestPullRequestReviewers, type PullRequestReviewersOctokit } from "./reviewers.js";
-import {
-  findStickyClearanceComment,
-  upsertStickyClearanceComment,
-  type StickyCommentOctokit,
-} from "./sticky-comment.js";
 
 export type EscalationRunnerRepository = {
   owner: string;
   repo: string;
 };
 
-export type GithubEscalationRunnerOctokit = NotificationCommentOctokit &
-  OpenPullRequestsOctokit &
-  PullRequestReviewersOctokit &
-  StickyCommentOctokit;
+export type GithubEscalationRunnerOctokit = OpenPullRequestsOctokit;
 
 export type GithubEscalationRunnerStateStore = {
-  enqueueOutboxJob?: GithubOutboxStore["enqueueOutboxJob"];
+  enqueueOutboxJob: GithubOutboxStore["enqueueOutboxJob"];
   loadPullRequestState(input: {
     owner: string;
     pullNumber: number;
@@ -46,8 +36,8 @@ export type GithubEscalationRunnerStateStore = {
 };
 
 export type GithubEscalationRunnerOptions = {
-  installationId?: number;
-  stateStore?: GithubEscalationRunnerStateStore;
+  installationId: number;
+  stateStore: GithubEscalationRunnerStateStore;
 };
 
 export type EscalationPullResult =
@@ -72,13 +62,11 @@ export async function runGithubEscalationSweep(
   octokit: GithubEscalationRunnerOctokit,
   repository: EscalationRunnerRepository,
   now: string,
-  options: GithubEscalationRunnerOptions = {},
+  options: GithubEscalationRunnerOptions,
 ): Promise<EscalationSweepResult> {
   const pullRequests = await listOpenPullRequests(octokit, repository);
   const results = await Promise.all(
-    pullRequests.map((pullRequest) =>
-      processPullRequest(octokit, repository, pullRequest, now, options),
-    ),
+    pullRequests.map((pullRequest) => processPullRequest(repository, pullRequest, now, options)),
   );
 
   return {
@@ -88,105 +76,57 @@ export async function runGithubEscalationSweep(
 }
 
 async function processPullRequest(
-  octokit: GithubEscalationRunnerOctokit,
   repository: EscalationRunnerRepository,
   pullRequest: OpenPullRequest,
   now: string,
   options: GithubEscalationRunnerOptions,
 ): Promise<EscalationPullResult> {
-  const outbox = getGithubOutbox(options);
-  const stickyComment = await findStickyClearanceComment(octokit, {
+  const storedState = await options.stateStore.loadPullRequestState({
     owner: repository.owner,
     pullNumber: pullRequest.number,
     repo: repository.repo,
   });
-  const storedState = await options.stateStore?.loadPullRequestState({
-    owner: repository.owner,
-    pullNumber: pullRequest.number,
-    repo: repository.repo,
-  });
-  if (stickyComment?.body === undefined && storedState === undefined) {
+  if (storedState === undefined) {
     return {
       pullNumber: pullRequest.number,
-      reason:
-        options.stateStore === undefined
-          ? "missing sticky Clearance comment"
-          : "missing sticky Clearance comment and stored Clearance state",
-      status: "skipped",
-    };
-  }
-
-  const parsedState =
-    storedState === undefined ? parseClearanceState(stickyComment?.body) : undefined;
-  if (storedState === undefined && parsedState?.ok === false) {
-    return {
-      pullNumber: pullRequest.number,
-      reason: parsedState.reason,
-      status: "skipped",
-    };
-  }
-  const state = storedState ?? parsedState?.state;
-  if (state === undefined) {
-    return {
-      pullNumber: pullRequest.number,
-      reason: "missing Clearance state",
+      reason: "missing stored Clearance state",
       status: "skipped",
     };
   }
 
   const result = await processEscalationRun(
     {
-      existingCommentBody: stickyComment?.body,
-      existingState: state,
       now,
-      requirements: buildEscalationRequirementsFromState(state, now),
+      requirements: buildEscalationRequirementsFromState(storedState, now),
+      state: storedState,
     },
     {
       postComment: async (body) => {
-        if (outbox !== undefined) {
-          await enqueueGithubOutboxJob(outbox.store, {
-            payload: {
-              body,
-              installationId: outbox.installationId,
-              owner: repository.owner,
-              pullNumber: pullRequest.number,
-              repo: repository.repo,
-            },
-            type: githubOutboxJobTypes.postComment,
-          });
-          return;
-        }
-
-        await octokit.rest.issues.createComment({
-          body,
-          issue_number: pullRequest.number,
-          owner: repository.owner,
-          repo: repository.repo,
+        await enqueueGithubOutboxJob(options.stateStore, {
+          payload: {
+            body,
+            installationId: options.installationId,
+            owner: repository.owner,
+            pullNumber: pullRequest.number,
+            repo: repository.repo,
+          },
+          type: githubOutboxJobTypes.postComment,
         });
       },
-      requestReviewers: async (reviewers) =>
-        outbox === undefined
-          ? requestPullRequestReviewers(
-              octokit,
-              {
-                owner: repository.owner,
-                pullNumber: pullRequest.number,
-                repo: repository.repo,
-              },
-              reviewers,
-            )
-          : enqueueGithubOutboxJob(outbox.store, {
-              payload: {
-                installationId: outbox.installationId,
-                owner: repository.owner,
-                pullNumber: pullRequest.number,
-                repo: repository.repo,
-                reviewers,
-              },
-              type: githubOutboxJobTypes.requestReviewers,
-            }),
+      requestReviewers: async (reviewers) => {
+        await enqueueGithubOutboxJob(options.stateStore, {
+          payload: {
+            installationId: options.installationId,
+            owner: repository.owner,
+            pullNumber: pullRequest.number,
+            repo: repository.repo,
+            reviewers,
+          },
+          type: githubOutboxJobTypes.requestReviewers,
+        });
+      },
       saveState: async (nextState) => {
-        await options.stateStore?.savePullRequestState(
+        await options.stateStore.savePullRequestState(
           {
             author: pullRequest.author,
             headSha: pullRequest.headSha,
@@ -200,29 +140,16 @@ async function processPullRequest(
         );
       },
       upsertComment: async (body) => {
-        if (outbox !== undefined) {
-          await enqueueGithubOutboxJob(outbox.store, {
-            payload: {
-              body,
-              installationId: outbox.installationId,
-              owner: repository.owner,
-              pullNumber: pullRequest.number,
-              repo: repository.repo,
-            },
-            type: githubOutboxJobTypes.upsertComment,
-          });
-          return;
-        }
-
-        await upsertStickyClearanceComment(
-          octokit,
-          {
+        await enqueueGithubOutboxJob(options.stateStore, {
+          payload: {
+            body,
+            installationId: options.installationId,
             owner: repository.owner,
             pullNumber: pullRequest.number,
             repo: repository.repo,
           },
-          body,
-        );
+          type: githubOutboxJobTypes.upsertComment,
+        });
       },
     },
   );
@@ -232,21 +159,5 @@ async function processPullRequest(
     pullNumber: pullRequest.number,
     sideEffectFailures: result.sideEffectFailures.length,
     status: "processed",
-  };
-}
-
-function getGithubOutbox(
-  options: GithubEscalationRunnerOptions,
-): { installationId: number; store: GithubOutboxStore } | undefined {
-  if (options.installationId === undefined || options.stateStore?.enqueueOutboxJob === undefined) {
-    return undefined;
-  }
-
-  return {
-    installationId: options.installationId,
-    store: {
-      enqueueOutboxJob: (input) =>
-        options.stateStore?.enqueueOutboxJob?.(input) ?? Promise.resolve(),
-    },
   };
 }

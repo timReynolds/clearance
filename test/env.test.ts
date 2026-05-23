@@ -6,6 +6,7 @@ describe("readEnv", () => {
   it("normalizes private keys", () => {
     expect(
       readEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/postgres",
         GITHUB_APP_ID: "123",
         GITHUB_PRIVATE_KEY: "line1\\nline2",
         GITHUB_WEBHOOK_SECRET: "secret",
@@ -37,11 +38,22 @@ describe("readEnv", () => {
   it("rejects malformed database booleans", () => {
     expect(() =>
       readEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/postgres",
         DATABASE_PREPARE_STATEMENTS: "sometimes",
         GITHUB_APP_ID: "123",
         GITHUB_PRIVATE_KEY: "key",
         GITHUB_WEBHOOK_SECRET: "secret",
       }),
     ).toThrow(/invalid boolean/);
+  });
+
+  it("requires a database URL", () => {
+    expect(() =>
+      readEnv({
+        GITHUB_APP_ID: "123",
+        GITHUB_PRIVATE_KEY: "key",
+        GITHUB_WEBHOOK_SECRET: "secret",
+      }),
+    ).toThrow(/DATABASE_URL/);
   });
 });

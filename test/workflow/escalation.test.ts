@@ -5,15 +5,14 @@ import {
   processEscalationRun,
   type EscalationWorkflowDependencies,
 } from "../../src/workflow/index.js";
-import { createEmptyClearanceState, renderClearanceComment } from "../../src/state/index.js";
+import { createEmptyClearanceState } from "../../src/state/index.js";
 
 describe("processEscalationRun", () => {
-  it("posts warnings, requests reviewers, records fallback notifications, and updates sticky state", async () => {
+  it("posts warnings, requests reviewers, records fallback notifications, and updates persisted state", async () => {
     const dependencies = createDependencies();
 
     const result = await processEscalationRun(
       {
-        existingCommentBody: renderClearanceComment(createEmptyClearanceState()),
         now: "2026-05-17T12:00:00.000Z",
         requirements: [
           {
@@ -28,6 +27,7 @@ describe("processEscalationRun", () => {
             warnAfter: "1h",
           },
         ],
+        state: createEmptyClearanceState(),
       },
       dependencies,
     );
@@ -73,7 +73,6 @@ describe("processEscalationRun", () => {
 
     const result = await processEscalationRun(
       {
-        existingCommentBody: renderClearanceComment(createEmptyClearanceState()),
         now: "2026-05-17T12:00:00.000Z",
         requirements: [
           {
@@ -85,6 +84,10 @@ describe("processEscalationRun", () => {
             warnAfter: "1h",
           },
         ],
+        state: {
+          ...createEmptyClearanceState(),
+          dryRun: true,
+        },
       },
       dependencies,
     );
@@ -95,6 +98,40 @@ describe("processEscalationRun", () => {
     expect(dependencies.upsertComment).toHaveBeenCalledTimes(1);
   });
 
+  it("updates only the sticky comment in dry-run mode", async () => {
+    const dependencies = createDependencies();
+
+    const result = await processEscalationRun(
+      {
+        now: "2026-05-17T12:00:00.000Z",
+        requirements: [
+          {
+            assignedReviewers: ["alice"],
+            eligibleReviewers: ["alice", "bob"],
+            escalateAfter: "2h",
+            identity: "and:platform",
+            pendingSince: "2026-05-17T07:00:00.000Z",
+            status: "pending",
+            warnAfter: "1h",
+          },
+        ],
+        state: {
+          ...createEmptyClearanceState(),
+          dryRun: true,
+        },
+      },
+      dependencies,
+    );
+
+    expect(result.actions).toEqual([]);
+    expect(result.state.escalations).toEqual([]);
+    expect(dependencies.upsertComment).toHaveBeenCalledWith(
+      expect.stringContaining("Dry run mode is active."),
+    );
+    expect(dependencies.postComment).not.toHaveBeenCalled();
+    expect(dependencies.requestReviewers).not.toHaveBeenCalled();
+  });
+
   it("returns side effect failures instead of throwing", async () => {
     const dependencies = createDependencies();
     dependencies.postComment = vi.fn<EscalationWorkflowDependencies["postComment"]>(async () => {
@@ -103,7 +140,6 @@ describe("processEscalationRun", () => {
 
     const result = await processEscalationRun(
       {
-        existingCommentBody: renderClearanceComment(createEmptyClearanceState()),
         now: "2026-05-17T12:00:00.000Z",
         requirements: [
           {
@@ -115,6 +151,7 @@ describe("processEscalationRun", () => {
             warnAfter: "1h",
           },
         ],
+        state: createEmptyClearanceState(),
       },
       dependencies,
     );
@@ -128,7 +165,7 @@ describe("processEscalationRun", () => {
     expect(dependencies.upsertComment).toHaveBeenCalled();
   });
 
-  it("builds escalation requirements from sticky state", () => {
+  it("builds escalation requirements from persisted state", () => {
     const requirements = buildEscalationRequirementsFromState(
       {
         ...createEmptyClearanceState(),
@@ -190,6 +227,7 @@ function createDependencies(): EscalationWorkflowDependencies {
   return {
     postComment: vi.fn<EscalationWorkflowDependencies["postComment"]>(async () => {}),
     requestReviewers: vi.fn<EscalationWorkflowDependencies["requestReviewers"]>(async () => {}),
+    saveState: vi.fn<EscalationWorkflowDependencies["saveState"]>(async () => {}),
     upsertComment: vi.fn<EscalationWorkflowDependencies["upsertComment"]>(async () => {}),
   };
 }

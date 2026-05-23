@@ -87,6 +87,34 @@ require = [{ from = "@org/services", count = 1 }]
     ]);
   });
 
+  it("enables dry-run mode from applicable ownership files", () => {
+    const result = resolveOwnership({
+      changedFiles: ["services/api/src/routes.ts"],
+      ownershipFiles: [
+        ownersFile(
+          ".",
+          `
+[[rule]]
+paths = ["docs/**"]
+require = [{ from = "@org/docs", count = 1 }]
+`,
+        ),
+        ownersFile(
+          "services/api",
+          `
+dry_run = true
+
+[[rule]]
+paths = ["src/**"]
+require = [{ from = "@org/api", count = 1 }]
+`,
+        ),
+      ],
+    });
+
+    expect(result.dryRun).toBe(true);
+  });
+
   it("returns OR requirements and notifications for matching relative globs", () => {
     const result = resolveOwnership({
       changedFiles: ["apps/web/src/pages/home.ts"],

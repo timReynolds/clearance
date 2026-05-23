@@ -71,6 +71,7 @@ export type NotificationRecord = {
 export type OwnershipResolution = {
   andRequirements: AndRequirement[];
   diagnostics: ResolutionDiagnostic[];
+  dryRun: boolean;
   notifications: NotificationRecord[];
   orRequirements: OrRequirement[];
 };
@@ -84,6 +85,7 @@ export function resolveOwnership(input: ResolveOwnershipInput): OwnershipResolut
   const andByIdentity = new Map<string, AndRequirement>();
   const orByIdentity = new Map<string, OrRequirement>();
   const notificationByIdentity = new Map<string, NotificationRecord>();
+  let dryRun = false;
 
   for (const rawChangedFile of input.changedFiles) {
     const changedFile = normalizeRepositoryPath(rawChangedFile);
@@ -102,6 +104,7 @@ export function resolveOwnership(input: ResolveOwnershipInput): OwnershipResolut
       if (ownershipFile === undefined || config === undefined) {
         continue;
       }
+      dryRun ||= config.dry_run;
       const resolvedOwnershipFile = {
         ...ownershipFile,
         config,
@@ -127,6 +130,7 @@ export function resolveOwnership(input: ResolveOwnershipInput): OwnershipResolut
   return {
     andRequirements,
     diagnostics,
+    dryRun,
     notifications,
     orRequirements,
   };

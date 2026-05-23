@@ -4,7 +4,7 @@ import { App } from "@octokit/app";
 import { createNodeMiddleware } from "@octokit/webhooks";
 import dotenv from "dotenv";
 
-import { createDatabaseClient, DrizzleClearanceStore, type DatabaseClient } from "./db/index.js";
+import { createDatabaseClient, DrizzleClearanceStore } from "./db/index.js";
 import { readEnv } from "./env.js";
 import { registerGithubHandlers, type GithubWorkflowOctokit } from "./github/handlers.js";
 import { createInstallationOctokit } from "./github/installation-client.js";
@@ -21,9 +21,12 @@ const app = new App({
   },
 });
 
-const databaseClient = createOptionalDatabaseClient();
-const stateStore =
-  databaseClient === undefined ? undefined : new DrizzleClearanceStore(databaseClient.db);
+const databaseClient = createDatabaseClient({
+  maxConnections: env.DATABASE_MAX_CONNECTIONS,
+  prepareStatements: env.DATABASE_PREPARE_STATEMENTS,
+  url: env.DATABASE_URL,
+});
+const stateStore = new DrizzleClearanceStore(databaseClient.db);
 
 registerGithubHandlers(
   app.webhooks,
@@ -52,22 +55,9 @@ server.listen(env.PORT, () => {
   console.info(`Clearance listening on :${env.PORT}${env.WEBHOOK_PATH}`);
 });
 
-function createOptionalDatabaseClient(): DatabaseClient | undefined {
-  if (env.DATABASE_URL === undefined) {
-    console.info("DATABASE_URL is not set; using sticky comment state only");
-    return undefined;
-  }
-
-  return createDatabaseClient({
-    maxConnections: env.DATABASE_MAX_CONNECTIONS,
-    prepareStatements: env.DATABASE_PREPARE_STATEMENTS,
-    url: env.DATABASE_URL,
-  });
-}
-
 async function shutdown(): Promise<void> {
   server.close();
-  await databaseClient?.close();
+  await databaseClient.close();
 }
 
 process.once("SIGINT", () => {

@@ -3,10 +3,7 @@ import { z } from "zod";
 const envSchema = z.object({
   DATABASE_MAX_CONNECTIONS: z.coerce.number().int().positive().default(5),
   DATABASE_PREPARE_STATEMENTS: z.string().default("false").transform(parseBoolean),
-  DATABASE_URL: z.preprocess(
-    (value) => (value === "" ? undefined : value),
-    z.string().min(1).optional(),
-  ),
+  DATABASE_URL: z.preprocess((value) => (value === "" ? undefined : value), z.string().min(1)),
   GITHUB_APP_ID: z.coerce.number().int().positive(),
   GITHUB_PRIVATE_KEY: z.string().min(1).transform(normalizePrivateKey),
   GITHUB_WEBHOOK_SECRET: z.string().min(1),

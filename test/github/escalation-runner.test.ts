@@ -5,42 +5,37 @@ import {
   type GithubEscalationRunnerOctokit,
   type GithubEscalationRunnerStateStore,
 } from "../../src/github/index.js";
-import { createEmptyClearanceState, renderClearanceComment } from "../../src/state/index.js";
+import { createEmptyClearanceState, type ClearanceState } from "../../src/state/index.js";
 
-type CreateComment = GithubEscalationRunnerOctokit["rest"]["issues"]["createComment"];
-type ListComments = GithubEscalationRunnerOctokit["rest"]["issues"]["listComments"];
-type UpdateComment = GithubEscalationRunnerOctokit["rest"]["issues"]["updateComment"];
 type ListPulls = GithubEscalationRunnerOctokit["rest"]["pulls"]["list"];
-type RequestReviewers = GithubEscalationRunnerOctokit["rest"]["pulls"]["requestReviewers"];
 
 describe("runGithubEscalationSweep", () => {
-  it("processes open pull requests with sticky Clearance state", async () => {
-    const octokit = createEscalationRunnerOctokit({
-      stickyCommentBody: renderClearanceComment({
-        ...createEmptyClearanceState(),
-        assignments: [
-          {
-            assignedAt: "2026-05-17T07:00:00.000Z",
-            requirementIdentity: "and:platform",
-            reviewers: ["alice"],
-          },
-        ],
-        requirements: [
-          {
-            approvedBy: [],
-            assignedReviewers: ["alice"],
-            eligibleReviewers: ["alice", "bob"],
-            escalateAfter: "2h",
-            identity: "and:platform",
-            label: "Platform",
-            pendingSince: "2026-05-17T07:00:00.000Z",
-            requiredCount: 1,
-            status: "pending",
-            type: "and",
-            warnAfter: "1h",
-          },
-        ],
-      }),
+  it("processes open pull requests with stored Clearance state", async () => {
+    const octokit = createEscalationRunnerOctokit();
+    const stateStore = createStateStore({
+      ...createEmptyClearanceState(),
+      assignments: [
+        {
+          assignedAt: "2026-05-17T07:00:00.000Z",
+          requirementIdentity: "and:platform",
+          reviewers: ["alice"],
+        },
+      ],
+      requirements: [
+        {
+          approvedBy: [],
+          assignedReviewers: ["alice"],
+          eligibleReviewers: ["alice", "bob"],
+          escalateAfter: "2h",
+          identity: "and:platform",
+          label: "Platform",
+          pendingSince: "2026-05-17T07:00:00.000Z",
+          requiredCount: 1,
+          status: "pending",
+          type: "and",
+          warnAfter: "1h",
+        },
+      ],
     });
 
     const result = await runGithubEscalationSweep(
@@ -50,6 +45,7 @@ describe("runGithubEscalationSweep", () => {
         repo: "clearance",
       },
       "2026-05-17T12:00:00.000Z",
+      { installationId: 123, stateStore },
     );
 
     expect(result).toEqual({
@@ -63,29 +59,36 @@ describe("runGithubEscalationSweep", () => {
       ],
       repository: "acme/clearance",
     });
-    expect(octokit.rest.pulls.requestReviewers).toHaveBeenCalledWith({
-      owner: "acme",
-      pull_number: 42,
-      repo: "clearance",
-      reviewers: ["bob"],
-    });
-    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: "Warn assigned reviewers for and:platform: @alice",
+        payload: expect.objectContaining({
+          body: "Warn assigned reviewers for and:platform: @alice",
+          pullNumber: 42,
+        }),
+        type: "github.post-comment",
       }),
     );
-    expect(octokit.rest.issues.updateComment).toHaveBeenCalledWith(
+    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: expect.stringContaining("<!-- clearance-state:v1"),
-        comment_id: 100,
+        payload: expect.objectContaining({
+          reviewers: ["bob"],
+        }),
+        type: "github.request-reviewers",
+      }),
+    );
+    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          body: expect.stringContaining("<!-- clearance-state:v1"),
+        }),
+        type: "github.upsert-comment",
       }),
     );
   });
 
-  it("skips pull requests that do not have parseable sticky state", async () => {
-    const octokit = createEscalationRunnerOctokit({
-      stickyCommentBody: undefined,
-    });
+  it("skips pull requests without stored Clearance state", async () => {
+    const octokit = createEscalationRunnerOctokit();
+    const stateStore = createStateStore();
 
     const result = await runGithubEscalationSweep(
       octokit,
@@ -94,46 +97,38 @@ describe("runGithubEscalationSweep", () => {
         repo: "clearance",
       },
       "2026-05-17T12:00:00.000Z",
+      { installationId: 123, stateStore },
     );
 
     expect(result.pullRequests).toEqual([
       {
         pullNumber: 42,
-        reason: "missing sticky Clearance comment",
+        reason: "missing stored Clearance state",
         status: "skipped",
       },
     ]);
-    expect(octokit.rest.pulls.requestReviewers).not.toHaveBeenCalled();
+    expect(stateStore.enqueueOutboxJob).not.toHaveBeenCalled();
   });
 
-  it("uses stored Clearance state when the sticky comment is missing", async () => {
-    const octokit = createEscalationRunnerOctokit({
-      stickyCommentBody: undefined,
+  it("saves updated stored Clearance state", async () => {
+    const octokit = createEscalationRunnerOctokit();
+    const stateStore = createStateStore({
+      ...createEmptyClearanceState(),
+      requirements: [
+        {
+          approvedBy: [],
+          assignedReviewers: ["alice"],
+          eligibleReviewers: ["alice"],
+          identity: "and:platform",
+          label: "Platform",
+          pendingSince: "2026-05-17T07:00:00.000Z",
+          requiredCount: 1,
+          status: "pending",
+          type: "and",
+          warnAfter: "1h",
+        },
+      ],
     });
-    const stateStore: GithubEscalationRunnerStateStore = {
-      loadPullRequestState: vi.fn<GithubEscalationRunnerStateStore["loadPullRequestState"]>(
-        async () => ({
-          ...createEmptyClearanceState(),
-          requirements: [
-            {
-              approvedBy: [],
-              assignedReviewers: ["alice"],
-              eligibleReviewers: ["alice"],
-              identity: "and:platform",
-              label: "Platform",
-              pendingSince: "2026-05-17T07:00:00.000Z",
-              requiredCount: 1,
-              status: "pending",
-              type: "and",
-              warnAfter: "1h",
-            },
-          ],
-        }),
-      ),
-      savePullRequestState: vi.fn<GithubEscalationRunnerStateStore["savePullRequestState"]>(
-        async () => {},
-      ),
-    };
 
     const result = await runGithubEscalationSweep(
       octokit,
@@ -142,7 +137,7 @@ describe("runGithubEscalationSweep", () => {
         repo: "clearance",
       },
       "2026-05-17T12:00:00.000Z",
-      { stateStore },
+      { installationId: 123, stateStore },
     );
 
     expect(result.pullRequests).toEqual([
@@ -168,24 +163,96 @@ describe("runGithubEscalationSweep", () => {
         ],
       }),
     );
-    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+  });
+
+  it("updates only the sticky comment in dry-run mode", async () => {
+    const octokit = createEscalationRunnerOctokit();
+    const stateStore = createStateStore({
+      ...createEmptyClearanceState(),
+      dryRun: true,
+      requirements: [
+        {
+          approvedBy: [],
+          assignedReviewers: ["alice"],
+          eligibleReviewers: ["alice", "bob"],
+          escalateAfter: "2h",
+          identity: "and:platform",
+          label: "Platform",
+          pendingSince: "2026-05-17T07:00:00.000Z",
+          requiredCount: 1,
+          status: "pending",
+          type: "and",
+          warnAfter: "1h",
+        },
+      ],
+    });
+
+    const result = await runGithubEscalationSweep(
+      octokit,
+      {
+        owner: "acme",
+        repo: "clearance",
+      },
+      "2026-05-17T12:00:00.000Z",
+      { installationId: 123, stateStore },
+    );
+
+    expect(result.pullRequests).toEqual([
+      {
+        actions: 0,
+        pullNumber: 42,
+        sideEffectFailures: 0,
+        status: "processed",
+      },
+    ]);
+    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledTimes(1);
+    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: expect.stringContaining("<!-- clearance-state:v1"),
-        issue_number: 42,
+        payload: expect.objectContaining({
+          body: expect.stringContaining("Dry run mode is active."),
+        }),
+        type: "github.upsert-comment",
       }),
     );
   });
 });
 
-function createEscalationRunnerOctokit(options: {
-  stickyCommentBody: string | undefined;
-}): GithubEscalationRunnerOctokit {
+type TestEscalationStateStore = GithubEscalationRunnerStateStore & {
+  jobs: Array<Parameters<GithubEscalationRunnerStateStore["enqueueOutboxJob"]>[0]>;
+  savedState?: ClearanceState;
+};
+
+function createStateStore(initialState?: ClearanceState): TestEscalationStateStore {
+  const jobs: TestEscalationStateStore["jobs"] = [];
+  let savedState = initialState;
+  const store: TestEscalationStateStore = {
+    enqueueOutboxJob: vi.fn<GithubEscalationRunnerStateStore["enqueueOutboxJob"]>(async (job) => {
+      jobs.push(job);
+    }),
+    jobs,
+    loadPullRequestState: vi.fn<GithubEscalationRunnerStateStore["loadPullRequestState"]>(
+      async () => savedState,
+    ),
+    savePullRequestState: vi.fn<GithubEscalationRunnerStateStore["savePullRequestState"]>(
+      async (_input, state) => {
+        savedState = state;
+        store.savedState = state;
+      },
+    ),
+    savedState,
+  };
+
+  return store;
+}
+
+function createEscalationRunnerOctokit(): GithubEscalationRunnerOctokit {
   const list = vi.fn<ListPulls>(async () => ({
     data: [
       {
         head: {
           sha: "head-sha",
         },
+        labels: [],
         number: 42,
         user: {
           login: "author",
@@ -193,38 +260,11 @@ function createEscalationRunnerOctokit(options: {
       },
     ],
   }));
-  const listComments = vi.fn<ListComments>(async () => ({
-    data:
-      options.stickyCommentBody === undefined
-        ? []
-        : [
-            {
-              body: options.stickyCommentBody,
-              id: 100,
-            },
-          ],
-  }));
 
   return {
     rest: {
-      issues: {
-        createComment: vi.fn<CreateComment>(async ({ body }) => ({
-          data: {
-            body,
-            id: 101,
-          },
-        })),
-        listComments,
-        updateComment: vi.fn<UpdateComment>(async ({ body, comment_id }) => ({
-          data: {
-            body,
-            id: comment_id,
-          },
-        })),
-      },
       pulls: {
         list,
-        requestReviewers: vi.fn<RequestReviewers>(async () => ({})),
       },
     },
   };

@@ -55,6 +55,7 @@ export type StateEvent = {
 export type ClearanceState = {
   approvals: ApprovalRecord[];
   assignments: AssignmentRecord[];
+  dryRun?: boolean;
   escalations: StateEvent[];
   fallbackNotifications: StateEvent[];
   notificationsSent: string[];
@@ -151,6 +152,7 @@ export function parseClearanceState(markdown: string | undefined): ClearanceStat
 export function renderClearanceComment(state: ClearanceState): string {
   const visibleSections = [
     "## Clearance",
+    renderModeNotice(state),
     renderSummary(state),
     renderRequirementTable(state),
     renderWarnings(state),
@@ -158,6 +160,12 @@ export function renderClearanceComment(state: ClearanceState): string {
   ].filter((section) => section !== "");
 
   return `${visibleSections.join("\n\n")}\n\n${serializeClearanceState(state)}\n`;
+}
+
+function renderModeNotice(state: ClearanceState): string {
+  return state.dryRun === true
+    ? "Dry run mode is active. Clearance is reporting requirements only and is not requesting reviewers or setting statuses."
+    : "";
 }
 
 function renderSummary(state: ClearanceState): string {
@@ -281,6 +289,7 @@ function normalizeClearanceState(state: ClearanceState): ClearanceState {
   return {
     approvals: state.approvals,
     assignments: state.assignments,
+    ...(state.dryRun === true ? { dryRun: true } : {}),
     escalations: state.escalations,
     fallbackNotifications: state.fallbackNotifications,
     notificationsSent: state.notificationsSent,
