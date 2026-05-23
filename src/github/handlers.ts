@@ -212,7 +212,7 @@ export function registerGithubHandlers(
     }
 
     try {
-      if (payload.action !== "submitted") {
+      if (payload.action !== "submitted" && payload.action !== "dismissed") {
         await recordWebhookDelivery(options, id, name, payload.action, payload, "processed");
         return;
       }
@@ -245,7 +245,7 @@ export function registerGithubHandlers(
           {
             ...input,
             reviewer,
-            reviewState: payload.review.state,
+            reviewState: payload.action === "dismissed" ? "dismissed" : payload.review.state,
           },
           buildWorkflowDependencies(octokit, options, installationId),
         );

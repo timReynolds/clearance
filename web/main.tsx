@@ -42,6 +42,7 @@ function App() {
     to?: number;
   }>({});
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | undefined>();
 
   useEffect(() => {
     writeLocalPreference("clearance.viewer", viewerLogin);
@@ -51,20 +52,26 @@ function App() {
     let cancelled = false;
     requestJson<MeResponse>(`/api/me?returnTo=${encodeURIComponent(window.location.pathname)}`, {
       headers: { "x-clearance-user": viewerLogin },
-    }).then((nextMe) => {
-      if (cancelled) {
-        return;
-      }
+    })
+      .then((nextMe) => {
+        if (cancelled) {
+          return;
+        }
 
-      setMe(nextMe);
-      if (
-        nextMe.authenticated &&
-        nextMe.viewer?.login !== undefined &&
-        nextMe.viewer.login !== viewerLogin
-      ) {
-        setViewerLogin(nextMe.viewer.login);
-      }
-    });
+        setMe(nextMe);
+        if (
+          nextMe.authenticated &&
+          nextMe.viewer?.login !== undefined &&
+          nextMe.viewer.login !== viewerLogin
+        ) {
+          setViewerLogin(nextMe.viewer.login);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setMe({ authenticated: false });
+        }
+      });
 
     return () => {
       cancelled = true;
@@ -74,6 +81,7 @@ function App() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setLoadError(undefined);
     requestJson<ReviewSnapshot>(buildReviewApiUrl(route, comparisonSelection), {
       headers: { "x-clearance-user": viewerLogin },
     })
@@ -84,6 +92,12 @@ function App() {
 
         setSnapshot(nextSnapshot);
         setSelectedPath((current) => current ?? nextSnapshot.files[0]?.path);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setSnapshot(undefined);
+          setLoadError(getClientErrorMessage(error, "Review unavailable"));
+        }
       })
       .finally(() => {
         if (!cancelled) {
@@ -107,7 +121,7 @@ function App() {
     return (
       <main className="boot">
         <RefreshCw className={loading ? "spin" : ""} size={18} />
-        <span>{loading ? "Loading review" : "Review unavailable"}</span>
+        <span>{loading ? "Loading review" : (loadError ?? "Review unavailable")}</span>
       </main>
     );
   }
@@ -979,6 +993,10 @@ type ClientResponse = {
 
 async function requestJson<T>(url: string, options: ClientRequestOptions): Promise<T> {
   const response = await request(url, options);
+  if (!response.ok) {
+    throw new Error(await readActionError(response));
+  }
+
   return (await response.json()) as T;
 }
 
@@ -1028,6 +1046,10 @@ async function readActionError(response: ClientResponse): Promise<string> {
   } catch {
     return `Request failed (${response.status})`;
   }
+}
+
+function getClientErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message.trim() !== "" ? error.message : fallback;
 }
 
 function parseReviewRoute(pathname: string): { owner: string; pullNumber: number; repo: string } {

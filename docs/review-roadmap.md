@@ -90,7 +90,8 @@ The current implementation adds:
 - Line-targeted comment creation from the diff gutter, with source snippets captured for durable
   anchors.
 - Content-token anchor relocation across new patchsets, with uncertain/deleted states.
-- Patchset comparison controls for choosing `PS N` to `PS M` on indexed PRs.
+- GitHub compare-backed patchset comparison controls for choosing `PS N` to `PS M` on indexed PRs,
+  with indexed snapshots as a fallback when GitHub cannot compare the recorded SHAs.
 - Since-last-visit comment activity on the review snapshot and UI, backed by per-user visit marks.
 - A demo snapshot fallback when no database state exists, so the UI can be evaluated locally before
   a PR has been indexed.

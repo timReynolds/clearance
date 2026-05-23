@@ -22,6 +22,8 @@ import {
   resolveGithubReviewThread,
   serializeReviewThreadMarker,
   submitGithubPullRequestApproval,
+  listFileChangesBetweenCommits,
+  type CommitCompareFileChange,
   type GithubReviewCommentMirror,
 } from "./github/index.js";
 import { createInstallationOctokit } from "./github/installation-client.js";
@@ -36,6 +38,9 @@ import {
   type CreateThreadRequest,
   type MarkReviewedRequest,
   type ReplyThreadRequest,
+  type ReviewFile,
+  type ReviewFileStatus,
+  type ReviewSnapshot,
   type SubmitReviewRequest,
 } from "./review/index.js";
 
@@ -87,27 +92,27 @@ const server = createServer((request, response) => {
   }
 
   if (request.url?.startsWith("/api/me") === true) {
-    void handleMeApiRequest(request, response);
+    handleAsyncRequest(response, () => handleMeApiRequest(request, response));
     return;
   }
 
   if (request.url?.startsWith("/auth/github/start") === true) {
-    void handleGithubOAuthStart(request, response);
+    handleAsyncRequest(response, () => handleGithubOAuthStart(request, response));
     return;
   }
 
   if (request.url?.startsWith("/auth/github/callback") === true) {
-    void handleGithubOAuthCallback(request, response);
+    handleAsyncRequest(response, () => handleGithubOAuthCallback(request, response));
     return;
   }
 
   if (request.url?.startsWith("/auth/logout") === true) {
-    void handleLogout(request, response);
+    handleAsyncRequest(response, () => handleLogout(request, response));
     return;
   }
 
   if (request.url?.startsWith("/api/review/") === true) {
-    void handleReviewApiRequest(request, response);
+    handleAsyncRequest(response, () => handleReviewApiRequest(request, response));
     return;
   }
 
@@ -117,7 +122,7 @@ const server = createServer((request, response) => {
       request.url?.startsWith("/review/") === true ||
       request.url?.startsWith("/assets/") === true)
   ) {
-    void servePublicAsset(request, response);
+    handleAsyncRequest(response, () => servePublicAsset(request, response));
     return;
   }
 
@@ -307,13 +312,17 @@ async function handleReviewApiRequest(
 
   if (request.method === "GET" && route.action === undefined) {
     try {
-      const snapshot =
-        (actor.authenticated
-          ? await reviewStore?.loadSnapshot(route, viewerLogin, {
+      const indexedSnapshot =
+        actor.authenticated && reviewStore !== undefined
+          ? await reviewStore.loadSnapshot(route, viewerLogin, {
               fromPatchsetNumber: getOptionalPositiveInteger(url.searchParams.get("from")),
               toPatchsetNumber: getOptionalPositiveInteger(url.searchParams.get("to")),
             })
-          : undefined) ??
+          : undefined;
+      const snapshot =
+        (indexedSnapshot === undefined
+          ? undefined
+          : await addGithubPatchsetComparison(indexedSnapshot, route)) ??
         (await loadPublicReviewSnapshot(
           createGithubReadOctokit(actor.accessToken),
           route,
@@ -539,6 +548,143 @@ function isDemoReviewRoute(route: Pick<ReviewPullRequestApiRoute, "owner" | "rep
  */
 function createGithubReadOctokit(accessToken: string | undefined): Octokit {
   return accessToken === undefined ? new Octokit() : createUserOctokit(accessToken);
+}
+
+async function addGithubPatchsetComparison(
+  snapshot: ReviewSnapshot,
+  ref: ReviewPullRequestApiRoute,
+): Promise<ReviewSnapshot> {
+  const fromPatchset = snapshot.patchsets.find(
+    (patchset) => patchset.patchsetNumber === snapshot.comparison.fromPatchsetNumber,
+  );
+  const toPatchset = snapshot.patchsets.find(
+    (patchset) => patchset.patchsetNumber === snapshot.comparison.toPatchsetNumber,
+  );
+  if (
+    fromPatchset === undefined ||
+    toPatchset === undefined ||
+    fromPatchset.patchsetNumber >= toPatchset.patchsetNumber
+  ) {
+    return snapshot;
+  }
+
+  try {
+    const installation = await app.octokit.request("GET /repos/{owner}/{repo}/installation", {
+      owner: ref.owner,
+      repo: ref.repo,
+    });
+    const octokit = await createInstallationOctokit(app, installation.data.id);
+    const files = await listFileChangesBetweenCommits(octokit, {
+      base: fromPatchset.headSha,
+      head: toPatchset.headSha,
+      owner: ref.owner,
+      repo: ref.repo,
+    });
+
+    return buildComparedSnapshot(snapshot, files);
+  } catch (error) {
+    console.warn(
+      {
+        error: getErrorMessage(error, "GitHub patchset comparison failed"),
+        fromPatchsetNumber: fromPatchset.patchsetNumber,
+        pullNumber: ref.pullNumber,
+        repository: `${ref.owner}/${ref.repo}`,
+        toPatchsetNumber: toPatchset.patchsetNumber,
+      },
+      "failed to load GitHub patchset comparison",
+    );
+
+    return {
+      ...snapshot,
+      capabilities: {
+        ...snapshot.capabilities,
+        limitations: appendUnique(
+          snapshot.capabilities.limitations,
+          "Exact GitHub commit comparison is unavailable; showing the indexed patchset snapshot.",
+        ),
+      },
+    };
+  }
+}
+
+function buildComparedSnapshot(
+  snapshot: ReviewSnapshot,
+  fileChanges: CommitCompareFileChange[],
+): ReviewSnapshot {
+  const files = fileChanges.map((file) => buildComparedReviewFile(snapshot.files, file));
+
+  return {
+    ...snapshot,
+    comparison: {
+      ...snapshot.comparison,
+      additions: files.reduce((total, file) => total + file.additions, 0),
+      deletions: files.reduce((total, file) => total + file.deletions, 0),
+      fileCount: files.length,
+    },
+    files,
+  };
+}
+
+function buildComparedReviewFile(
+  indexedFiles: ReviewFile[],
+  file: CommitCompareFileChange,
+): ReviewFile {
+  const indexedFile =
+    indexedFiles.find((candidate) => candidate.path === file.filename) ??
+    indexedFiles.find((candidate) => candidate.path === file.previousFilename);
+
+  return {
+    additions: file.additions,
+    deletions: file.deletions,
+    markState: indexedFile?.markState ?? "unreviewed",
+    markedAt: indexedFile?.markedAt,
+    markedPatchsetNumber: indexedFile?.markedPatchsetNumber,
+    patch: buildComparedFilePatch(file),
+    path: file.filename,
+    previousPath: file.previousFilename,
+    status: mapComparedFileStatus(file.status),
+  };
+}
+
+function buildComparedFilePatch(file: CommitCompareFileChange): string | undefined {
+  if (file.patch === undefined || file.patch.trim() === "") {
+    return undefined;
+  }
+
+  if (file.patch.startsWith("diff --git")) {
+    return file.patch;
+  }
+
+  const previousPath = file.previousFilename ?? file.filename;
+  const oldPath = file.status === "added" ? "/dev/null" : `a/${previousPath}`;
+  const newPath = file.status === "removed" ? "/dev/null" : `b/${file.filename}`;
+
+  return [
+    `diff --git a/${previousPath} b/${file.filename}`,
+    `--- ${oldPath}`,
+    `+++ ${newPath}`,
+    file.patch,
+  ].join("\n");
+}
+
+function mapComparedFileStatus(status: string): ReviewFileStatus {
+  switch (status) {
+    case "added":
+      return "added";
+    case "removed":
+      return "deleted";
+    case "renamed":
+      return "renamed";
+    case "changed":
+    case "copied":
+    case "modified":
+    default:
+      return "modified";
+  }
+}
+
+function appendUnique(values: string[], value: string): string[] {
+  return values.includes(value) ? values : [...values, value];
 }
 
 function parseReviewRoute(pathname: string):
@@ -1011,3 +1157,17 @@ process.once("SIGINT", () => {
 process.once("SIGTERM", () => {
   void shutdown().finally(() => process.exit(0));
 });
+
+function handleAsyncRequest(response: ServerResponse, handler: () => Promise<void>): void {
+  void handler().catch((error) => {
+    console.error(error, "request processing failed");
+    if (!response.headersSent) {
+      writeJson(response, 500, {
+        error: getErrorMessage(error, "request processing failed"),
+      });
+      return;
+    }
+
+    response.destroy(error instanceof Error ? error : undefined);
+  });
+}

@@ -189,6 +189,76 @@ describe("GitHub-native review helpers", () => {
     ).resolves.toBe("THREAD");
   });
 
+  it("paginates GitHub review threads and thread comments when finding node ids", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const graphql = async <TResponse>(_query: string, variables: Record<string, unknown>) => {
+      calls.push(variables);
+      if (variables.threadNodeId === "THREAD_OTHER") {
+        return {
+          node: {
+            comments: {
+              nodes: [{ id: "STILL_OTHER" }],
+              pageInfo: { hasNextPage: false },
+            },
+          },
+        } as TResponse;
+      }
+
+      if (variables.threadCursor === undefined) {
+        return {
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                nodes: [
+                  {
+                    comments: {
+                      nodes: [{ id: "OTHER" }],
+                      pageInfo: { endCursor: "comment-page-1", hasNextPage: true },
+                    },
+                    id: "THREAD_OTHER",
+                  },
+                ],
+                pageInfo: { endCursor: "thread-page-1", hasNextPage: true },
+              },
+            },
+          },
+        } as TResponse;
+      }
+
+      return {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: [
+                {
+                  comments: {
+                    nodes: [{ id: "COMMENT" }],
+                    pageInfo: { hasNextPage: false },
+                  },
+                  id: "THREAD",
+                },
+              ],
+              pageInfo: { hasNextPage: false },
+            },
+          },
+        },
+      } as TResponse;
+    };
+
+    await expect(
+      findGithubReviewThreadNodeId(
+        { graphql },
+        { owner: "acme", pullNumber: 5, repo: "app" },
+        "COMMENT",
+      ),
+    ).resolves.toBe("THREAD");
+    expect(calls).toEqual([
+      { number: 5, owner: "acme", repo: "app", threadCursor: undefined },
+      { commentCursor: "comment-page-1", threadNodeId: "THREAD_OTHER" },
+      { number: 5, owner: "acme", repo: "app", threadCursor: "thread-page-1" },
+    ]);
+  });
+
   it("finds GitHub pull request node ids for viewed-file mirroring", async () => {
     await expect(
       findGithubPullRequestNodeId(
@@ -207,8 +277,12 @@ function createReviewThreadsGraphql(
       repository: {
         pullRequest: {
           reviewThreads: {
+            pageInfo: { hasNextPage: false },
             nodes: threads.map((thread) => ({
-              comments: { nodes: thread.comments.map((id) => ({ id })) },
+              comments: {
+                nodes: thread.comments.map((id) => ({ id })),
+                pageInfo: { hasNextPage: false },
+              },
               id: thread.id,
             })),
           },

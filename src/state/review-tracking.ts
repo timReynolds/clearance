@@ -84,7 +84,19 @@ export function recordSubmittedReview(
   state: ClearanceState,
   input: SubmittedReviewInput,
 ): ClearanceState {
-  if (input.state.toUpperCase() !== "APPROVED") {
+  const reviewState = input.state.toUpperCase();
+  if (reviewState === "CHANGES_REQUESTED" || reviewState === "DISMISSED") {
+    return rebuildReviewState({
+      definitions: input.definitions,
+      headSha: input.headSha,
+      previousState: {
+        ...state,
+        approvals: removeReviewerApprovals(state.approvals, input.definitions, input.reviewer),
+      },
+    });
+  }
+
+  if (reviewState !== "APPROVED") {
     return state;
   }
 
@@ -123,6 +135,21 @@ export function recordSubmittedReview(
       approvals: replacedApprovals,
     },
   });
+}
+
+function removeReviewerApprovals(
+  approvals: ApprovalRecord[],
+  definitions: ReviewRequirementDefinition[],
+  reviewer: string,
+): ApprovalRecord[] {
+  const currentRequirementIdentities = new Set(
+    definitions.map((definition) => definition.identity),
+  );
+  return approvals.filter(
+    (approval) =>
+      approval.reviewer !== reviewer ||
+      !currentRequirementIdentities.has(approval.requirementIdentity),
+  );
 }
 
 export function invalidateStaleApprovals(

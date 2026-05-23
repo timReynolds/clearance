@@ -9,6 +9,8 @@ export {
 } from "./identity.js";
 export {
   listChangedFilesBetweenCommits,
+  listFileChangesBetweenCommits,
+  type CommitCompareFileChange,
   type CommitCompareOctokit,
   type CommitCompareRef,
 } from "./commit-compare.js";

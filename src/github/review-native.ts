@@ -215,14 +215,36 @@ export async function findGithubReviewThreadNodeId(
   ref: GithubReviewPullRequestRef,
   commentNodeId: string,
 ): Promise<string | undefined> {
+  return findGithubReviewThreadNodeIdPage(octokit, ref, commentNodeId);
+}
+
+async function findGithubReviewThreadNodeIdPage(
+  octokit: Pick<GithubNativeReviewOctokit, "graphql">,
+  ref: GithubReviewPullRequestRef,
+  commentNodeId: string,
+  threadCursor?: string,
+): Promise<string | undefined> {
   const response = await octokit.graphql<ReviewThreadsQueryResponse>(
-    `query FindClearanceReviewThread($owner: String!, $repo: String!, $number: Int!) {
+    `query FindClearanceReviewThread(
+        $owner: String!
+        $repo: String!
+        $number: Int!
+        $threadCursor: String
+      ) {
       repository(owner: $owner, name: $repo) {
         pullRequest(number: $number) {
-          reviewThreads(first: 100) {
+          reviewThreads(first: 100, after: $threadCursor) {
+            pageInfo {
+              endCursor
+              hasNextPage
+            }
             nodes {
               id
               comments(first: 100) {
+                pageInfo {
+                  endCursor
+                  hasNextPage
+                }
                 nodes {
                   id
                 }
@@ -232,16 +254,90 @@ export async function findGithubReviewThreadNodeId(
         }
       }
     }`,
-    { number: ref.pullNumber, owner: ref.owner, repo: ref.repo },
+    { number: ref.pullNumber, owner: ref.owner, repo: ref.repo, threadCursor },
   );
 
-  for (const thread of response.repository?.pullRequest?.reviewThreads.nodes ?? []) {
-    if (thread.comments.nodes.some((comment) => comment.id === commentNodeId)) {
-      return thread.id;
-    }
+  const reviewThreads = response.repository?.pullRequest?.reviewThreads;
+  const threads = reviewThreads?.nodes ?? [];
+  const threadWithFirstPageMatch = threads.find((thread) =>
+    thread.comments.nodes.some((comment) => comment.id === commentNodeId),
+  );
+  if (threadWithFirstPageMatch !== undefined) {
+    return threadWithFirstPageMatch.id;
+  }
+
+  const threadCommentMatches = await Promise.all(
+    threads
+      .filter((thread) => getNextCursor(thread.comments.pageInfo) !== undefined)
+      .map(async (thread) => {
+        const containsComment = await reviewThreadContainsComment(
+          octokit,
+          thread.id,
+          commentNodeId,
+          getNextCursor(thread.comments.pageInfo),
+        );
+        return containsComment ? thread.id : undefined;
+      }),
+  );
+  const threadWithPagedCommentMatch = threadCommentMatches.find(isString);
+  if (threadWithPagedCommentMatch !== undefined) {
+    return threadWithPagedCommentMatch;
+  }
+
+  const nextThreadCursor =
+    reviewThreads === undefined ? undefined : getNextCursor(reviewThreads.pageInfo);
+  if (nextThreadCursor !== undefined) {
+    return findGithubReviewThreadNodeIdPage(octokit, ref, commentNodeId, nextThreadCursor);
   }
 
   return undefined;
+}
+
+async function reviewThreadContainsComment(
+  octokit: Pick<GithubNativeReviewOctokit, "graphql">,
+  threadNodeId: string,
+  commentNodeId: string,
+  commentCursor: string | undefined,
+): Promise<boolean> {
+  const response = await octokit.graphql<ReviewThreadCommentsQueryResponse>(
+    `query FindClearanceReviewThreadComment($threadNodeId: ID!, $commentCursor: String) {
+        node(id: $threadNodeId) {
+          ... on PullRequestReviewThread {
+            comments(first: 100, after: $commentCursor) {
+              pageInfo {
+                endCursor
+                hasNextPage
+              }
+              nodes {
+                id
+              }
+            }
+          }
+        }
+      }`,
+    { commentCursor, threadNodeId },
+  );
+  const comments = response.node?.comments;
+  if (comments?.nodes.some((comment) => comment.id === commentNodeId) === true) {
+    return true;
+  }
+
+  const nextCommentCursor = comments === undefined ? undefined : getNextCursor(comments.pageInfo);
+  if (nextCommentCursor !== undefined) {
+    return reviewThreadContainsComment(octokit, threadNodeId, commentNodeId, nextCommentCursor);
+  }
+
+  return false;
+}
+
+function isString(value: string | undefined): value is string {
+  return value !== undefined;
+}
+
+function getNextCursor(pageInfo: PageInfo): string | undefined {
+  return pageInfo.hasNextPage && typeof pageInfo.endCursor === "string"
+    ? pageInfo.endCursor
+    : undefined;
 }
 
 function isReviewThreadMarker(value: unknown): value is ReviewThreadMarker {
@@ -266,8 +362,10 @@ type ReviewThreadsQueryResponse = {
   repository?: {
     pullRequest?: {
       reviewThreads: {
+        pageInfo: PageInfo;
         nodes: Array<{
           comments: {
+            pageInfo: PageInfo;
             nodes: Array<{ id: string }>;
           };
           id: string;
@@ -283,4 +381,18 @@ type PullRequestNodeQueryResponse = {
       id: string;
     };
   };
+};
+
+type ReviewThreadCommentsQueryResponse = {
+  node?: {
+    comments: {
+      pageInfo: PageInfo;
+      nodes: Array<{ id: string }>;
+    };
+  };
+};
+
+type PageInfo = {
+  endCursor?: string | null;
+  hasNextPage: boolean;
 };

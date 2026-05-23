@@ -207,6 +207,55 @@ describe("registerGithubHandlers", () => {
     );
   });
 
+  it("revokes stored approvals from dismissed pull_request_review webhooks", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const webhooks = new Webhooks({ secret: "test-secret" });
+    const octokit = createWorkflowOctokit();
+    const stateStore = createStateStore({
+      initialState: {
+        approvals: [
+          {
+            approvedAt: "2026-05-17T10:00:00.000Z",
+            headSha: "head-sha",
+            requirementIdentity: "and:.:@org/platform:1",
+            reviewer: "alice",
+          },
+        ],
+        assignments: [],
+        escalations: [],
+        fallbackNotifications: [],
+        notificationsSent: [],
+        requirements: [],
+        version: 1,
+        warnings: [],
+      },
+    });
+
+    registerGithubHandlers(
+      webhooks,
+      {
+        getInstallationOctokit: vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
+          async () => octokit,
+        ),
+      },
+      { stateStore },
+    );
+
+    await webhooks.receive({
+      id: "delivery-id",
+      name: "pull_request_review",
+      payload: createPullRequestReviewPayload("dismissed"),
+    } as unknown as EmitterWebhookEvent);
+
+    expect(stateStore.savedState?.approvals).toEqual([]);
+    expect(stateStore.savedState?.requirements[0]).toEqual(
+      expect.objectContaining({
+        approvedBy: [],
+        status: "pending",
+      }),
+    );
+  });
+
   it("ignores unsupported pull_request and pull_request_review actions", async () => {
     const webhooks = new Webhooks({ secret: "test-secret" });
     const getInstallationOctokit = vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(

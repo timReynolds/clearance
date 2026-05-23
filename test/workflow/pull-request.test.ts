@@ -340,6 +340,41 @@ require = [{ from = "@org/platform", count = 1 }]
     expect(reviewDependencies.requestReviewers).not.toHaveBeenCalled();
   });
 
+  it("revokes submitted approvals when a reviewer requests changes", async () => {
+    const reviewDependencies = createDependencies({
+      changedFiles: ["src/index.ts"],
+      existingComment: approvedComment("head-sha"),
+      identityResolution: identityResolution(),
+      ownershipTree: ownershipTree(`
+[[rule]]
+paths = ["src/**"]
+require = [{ from = "@org/platform", count = 1 }]
+`),
+    });
+
+    const result = await processSubmittedReview(
+      {
+        ...input(),
+        reviewState: "changes_requested",
+        reviewer: "alice",
+      },
+      reviewDependencies,
+    );
+
+    expect(result.state.approvals).toEqual([]);
+    expect(result.state.requirements[0]).toEqual(
+      expect.objectContaining({
+        approvedBy: [],
+        status: "pending",
+      }),
+    );
+    expect(result.checks[1]).toEqual({
+      context: "clearance/review",
+      description: "1 review requirement pending",
+      state: "pending",
+    });
+  });
+
   it("updates the comment only for submitted reviews in dry-run mode", async () => {
     const dependencies = createDependencies({
       changedFiles: ["src/index.ts"],

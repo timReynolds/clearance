@@ -251,6 +251,63 @@ describe("review tracking", () => {
     ).toEqual(initialState);
   });
 
+  it("removes a reviewer's approvals when they request changes or a review is dismissed", () => {
+    const approvedState = rebuildReviewState({
+      definitions: definitions(),
+      headSha: "head-1",
+      previousState: {
+        ...createEmptyClearanceState(),
+        approvals: [
+          {
+            approvedAt: "2026-05-17T10:00:00.000Z",
+            headSha: "head-1",
+            requirementIdentity: "and:platform",
+            reviewer: "alice",
+          },
+          {
+            approvedAt: "2026-05-17T10:05:00.000Z",
+            headSha: "head-1",
+            requirementIdentity: "and:security",
+            reviewer: "carol",
+          },
+        ],
+      },
+    });
+
+    const changesRequested = recordSubmittedReview(approvedState, {
+      approvedAt: "2026-05-17T11:00:00.000Z",
+      definitions: definitions(),
+      headSha: "head-1",
+      reviewer: "alice",
+      state: "changes_requested",
+    });
+
+    expect(changesRequested.approvals).toEqual([
+      {
+        approvedAt: "2026-05-17T10:05:00.000Z",
+        headSha: "head-1",
+        requirementIdentity: "and:security",
+        reviewer: "carol",
+      },
+    ]);
+    expect(
+      changesRequested.requirements.find((requirement) => requirement.identity === "and:platform"),
+    ).toEqual(expect.objectContaining({ approvedBy: [], status: "pending" }));
+
+    const dismissed = recordSubmittedReview(changesRequested, {
+      approvedAt: "2026-05-17T11:05:00.000Z",
+      definitions: definitions(),
+      headSha: "head-1",
+      reviewer: "carol",
+      state: "dismissed",
+    });
+
+    expect(dismissed.approvals).toEqual([]);
+    expect(
+      dismissed.requirements.find((requirement) => requirement.identity === "and:security"),
+    ).toEqual(expect.objectContaining({ approvedBy: [], status: "pending" }));
+  });
+
   it("invalidates only approvals whose relevant files changed", () => {
     const approvedState = rebuildReviewState({
       definitions: definitions(),

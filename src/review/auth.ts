@@ -132,6 +132,7 @@ export class DrizzleReviewAuthStore {
         expiresAt: reviewSessions.expiresAt,
         id: reviewUsers.id,
         login: reviewUsers.githubLogin,
+        tokenExpiresAt: reviewUserTokens.expiresAt,
       })
       .from(reviewSessions)
       .innerJoin(reviewUsers, eq(reviewSessions.userId, reviewUsers.id))
@@ -141,7 +142,13 @@ export class DrizzleReviewAuthStore {
       )
       .limit(1);
     const row = rows[0];
-    if (row === undefined || Date.parse(row.expiresAt) <= Date.now()) {
+    if (
+      row === undefined ||
+      isExpired(row.expiresAt) ||
+      row.accessTokenCiphertext === null ||
+      (row.tokenExpiresAt !== null && isExpired(row.tokenExpiresAt))
+    ) {
+      await this.deleteSession(sessionToken);
       return undefined;
     }
 
@@ -209,6 +216,11 @@ export class DrizzleReviewAuthStore {
 
     return safeEqual(row.csrfTokenHash, hashSecret(input.csrfToken, this.options.sessionSecret));
   }
+}
+
+function isExpired(value: string): boolean {
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) || timestamp <= Date.now();
 }
 
 export function createRandomToken(): string {
