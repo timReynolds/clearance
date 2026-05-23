@@ -8,8 +8,13 @@ The database is the canonical persistence layer for:
 - normalized requirements, assignments, approvals, notifications, and escalation events
 - webhook delivery tracking
 - durable GitHub side-effect outbox jobs
+- the Clearance Review materialized index: patchsets, patchset files, content anchors, review
+  threads, patchset-aware file marks, visits, attention state, encrypted OAuth tokens, and sessions
 
 The sticky PR comment remains the user-facing GitHub status surface and compatibility fallback.
+For Clearance Review, GitHub remains the source of truth wherever GitHub has a native object. The
+database stores the extra review metadata GitHub does not model well and caches data reconstructed
+from GitHub APIs.
 
 ## Local Setup
 
@@ -66,6 +71,10 @@ When `DATABASE_URL` is configured, webhook and escalation workflows enqueue GitH
 - commit statuses
 - reviewer requests
 - notification comments
+
+Clearance Review OAuth-backed user actions currently write to GitHub inline and then update the
+review index. Moving those writes into a durable user-token outbox is still planned for retry
+behavior that matches the existing app-installation outbox.
 
 Drain queued jobs once:
 

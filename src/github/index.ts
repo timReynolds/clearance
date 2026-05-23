@@ -31,6 +31,8 @@ export {
 } from "./statuses.js";
 export {
   listChangedPullRequestFiles,
+  listPullRequestFileChanges,
+  type PullRequestFileChange,
   type PullRequestFilesOctokit,
   type PullRequestFilesRef,
 } from "./pull-request-files.js";
@@ -76,5 +78,25 @@ export {
   type GithubEscalationRunnerOctokit,
   type GithubEscalationRunnerStateStore,
 } from "./escalation-runner.js";
+export {
+  appendReviewThreadMarker,
+  createGithubReviewThreadComment,
+  findGithubPullRequestNodeId,
+  findGithubReviewThreadNodeId,
+  markGithubFileViewed,
+  parseReviewThreadMarker,
+  replyToGithubReviewThread,
+  resolveGithubReviewThread,
+  reviewThreadMarkerEnd,
+  reviewThreadMarkerStart,
+  serializeReviewThreadMarker,
+  stripReviewThreadMarker,
+  submitGithubPullRequestApproval,
+  type CreateGithubReviewThreadInput,
+  type GithubNativeReviewOctokit,
+  type GithubReviewCommentMirror,
+  type GithubReviewPullRequestRef,
+  type ReviewThreadMarker,
+} from "./review-native.js";
 export { findStickyClearanceComment, type StickyClearanceComment } from "./sticky-comment.js";
 export { ownersFileName, type OwnershipFile, type OwnershipTree } from "../owners/index.js";

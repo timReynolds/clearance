@@ -9,12 +9,31 @@ const envSchema = z.object({
   ),
   ESCALATION_REPOSITORIES: z.string().default("").transform(parseRepositoryList),
   GITHUB_APP_ID: z.coerce.number().int().positive(),
+  GITHUB_CLIENT_ID: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  GITHUB_CLIENT_SECRET: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
   GITHUB_PRIVATE_KEY: z.string().min(1).transform(normalizePrivateKey),
   GITHUB_WEBHOOK_SECRET: z.string().min(1),
   OUTBOX_BATCH_SIZE: z.coerce.number().int().positive().default(25),
   OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
   OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().nonnegative().default(0),
   PORT: z.coerce.number().int().positive().default(3000),
+  REVIEW_CSRF_COOKIE_NAME: z.string().min(1).default("clearance_review_csrf"),
+  REVIEW_OAUTH_STATE_COOKIE_NAME: z.string().min(1).default("clearance_review_oauth_state"),
+  REVIEW_SESSION_COOKIE_NAME: z.string().min(1).default("clearance_review_session"),
+  REVIEW_SESSION_SECRET: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(32).optional(),
+  ),
+  REVIEW_TOKEN_ENCRYPTION_KEY: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(32).optional(),
+  ),
   WEBHOOK_PATH: z.string().min(1).default("/api/github/webhooks"),
 });
 

@@ -12,7 +12,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "npm run clean:dist && tsc -p tsconfig.build.json",
+    "build": "npm run clean:dist && npm run build:web && npm run build:server",
+    "build:server": "tsc -p tsconfig.build.json",
+    "build:web": "vite build",
     "clean:dist": "rm -rf dist",
     "db:push": "supabase db push",
     "db:reset": "supabase db reset",
@@ -28,24 +30,37 @@
     "start": "node dist/server.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.web.json"
   },
   "dependencies": {
+    "@base-ui/react": "^1.5.0",
     "@octokit/app": "^16.1.2",
+    "@octokit/core": "^7.0.6",
+    "@octokit/oauth-app": "^8.0.3",
     "@octokit/webhooks": "^14.2.0",
+    "@pierre/diffs": "^1.2.2",
+    "@pierre/trees": "^1.0.0-beta.4",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
+    "lucide-react": "^0.561.0",
     "postgres": "^3.4.9",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
     "toml": "^4.1.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^25.8.0",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.2.0",
     "@vitest/coverage-v8": "^4.1.6",
+    "jsdom": "^27.4.0",
     "oxlint": "^1.65.0",
     "prettier": "^3.8.3",
     "tsx": "^4.22.1",
     "typescript": "^6.0.3",
+    "vite": "^7.3.3",
     "vitest": "^4.1.6"
   }
 }

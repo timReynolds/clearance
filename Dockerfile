@@ -7,7 +7,9 @@ RUN npm ci
 FROM deps AS build
 
 COPY tsconfig*.json ./
+COPY index.html vite.config.ts ./
 COPY src ./src
+COPY web ./web
 RUN npm run build
 RUN npm prune --omit=dev
 

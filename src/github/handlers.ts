@@ -4,14 +4,17 @@ import {
   findStickyClearanceComment,
   listChangedFilesBetweenCommits,
   listChangedPullRequestFiles,
+  listPullRequestFileChanges,
   listPullRequestReviewerSignals,
   loadOwnershipTree,
+  parseReviewThreadMarker,
   enqueueGithubOutboxJob,
   githubOutboxJobTypes,
   requestPullRequestReviewers,
   resolveGithubIdentities,
   sendPullRequestNotifications,
   setCommitStatuses,
+  stripReviewThreadMarker,
   upsertStickyClearanceComment,
   type CommitCompareOctokit,
   type GithubIdentityOctokit,
@@ -20,6 +23,7 @@ import {
   type NotificationCommentOctokit,
   type OwnershipTreeOctokit,
   type PullRequestFilesOctokit,
+  type PullRequestFileChange,
   type PullRequestReviewersOctokit,
   type ReviewerSignalsOctokit,
   type StickyCommentOctokit,
@@ -32,6 +36,7 @@ import {
 } from "../workflow/index.js";
 import type { ClearanceState } from "../state/index.js";
 import { parseOverrideCommentCommand } from "../override/index.js";
+import type { ReviewPatchsetInput, ReviewPullRequestRef } from "../review/index.js";
 
 const pullRequestActions = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
 
@@ -90,7 +95,34 @@ export type GithubHandlerStateStore = {
   savePullRequestState(input: PullRequestWorkflowInput, state: ClearanceState): Promise<void>;
 };
 
+export type GithubHandlerReviewStore = {
+  ingestGithubReviewComment?(
+    ref: ReviewPullRequestRef,
+    input: {
+      authorLogin: string;
+      body: string;
+      createdAt: string;
+      githubCommentId: number;
+      githubNodeId?: string;
+      githubRootCommentId?: number;
+      githubThreadNodeId?: string;
+      githubUrl?: string;
+      line?: number;
+      marker: string;
+      path: string;
+      side?: "LEFT" | "RIGHT";
+      sourceText?: string;
+      threadId: string;
+    },
+  ): Promise<boolean>;
+  recordPatchset(
+    ref: ReviewPullRequestRef,
+    input: ReviewPatchsetInput,
+  ): Promise<number | undefined>;
+};
+
 export type GithubHandlerOptions = {
+  reviewStore?: GithubHandlerReviewStore;
   stateStore?: GithubHandlerStateStore;
 };
 
@@ -136,6 +168,7 @@ export function registerGithubHandlers(
           input,
           buildWorkflowDependencies(octokit, options, installationId),
         );
+        await recordReviewPatchset(input, payload, octokit, options);
 
         console.info(
           {
@@ -237,6 +270,67 @@ export function registerGithubHandlers(
         },
         "received pull request review event",
       );
+    } catch (error) {
+      await recordWebhookDelivery(
+        options,
+        id,
+        name,
+        payload.action,
+        payload,
+        "failed",
+        getErrorMessage(error, "webhook processing failed"),
+      );
+      throw error;
+    }
+  });
+
+  webhooks.on("pull_request_review_comment", async ({ id, name, payload }) => {
+    const shouldProcess = await beginWebhookDelivery(options, id, name, payload.action, payload);
+    if (!shouldProcess) {
+      return;
+    }
+
+    try {
+      if (payload.action !== "created" && payload.action !== "edited") {
+        await recordWebhookDelivery(options, id, name, payload.action, payload, "processed");
+        return;
+      }
+
+      const body = payload.comment.body ?? "";
+      const marker = parseReviewThreadMarker(body);
+      if (marker === undefined || options.reviewStore?.ingestGithubReviewComment === undefined) {
+        await recordWebhookDelivery(options, id, name, payload.action, payload, "processed");
+        return;
+      }
+
+      await options.reviewStore.ingestGithubReviewComment(
+        {
+          owner: payload.repository.owner.login,
+          pullNumber: payload.pull_request.number,
+          repo: payload.repository.name,
+        },
+        {
+          authorLogin: payload.comment.user?.login ?? "unknown",
+          body: stripReviewThreadMarker(body),
+          createdAt: payload.comment.created_at,
+          githubCommentId: payload.comment.id,
+          githubNodeId: payload.comment.node_id,
+          githubRootCommentId: payload.comment.in_reply_to_id ?? payload.comment.id,
+          githubUrl: payload.comment.html_url,
+          line: payload.comment.line ?? undefined,
+          marker: body.slice(body.indexOf("<!-- clearance-thread:v1")).trim(),
+          path: payload.comment.path,
+          side: payload.comment.side === "LEFT" ? "LEFT" : "RIGHT",
+          sourceText: getReviewCommentSourceText(
+            payload.comment.diff_hunk,
+            payload.comment.line ?? undefined,
+            payload.comment.side === "LEFT" ? "LEFT" : "RIGHT",
+          ),
+          threadId: marker.threadId,
+        },
+      );
+
+      await recordWebhookDelivery(options, id, name, payload.action, payload, "processed");
     } catch (error) {
       await recordWebhookDelivery(
         options,
@@ -407,6 +501,77 @@ async function getPullRequestDetails(
     headSha: response.data.head.sha,
     labels: getLabelNames(response.data.labels ?? []),
   };
+}
+
+async function recordReviewPatchset(
+  input: PullRequestWorkflowInput,
+  payload: unknown,
+  octokit: GithubWorkflowOctokit,
+  options: GithubHandlerOptions,
+): Promise<void> {
+  if (options.reviewStore === undefined) {
+    return;
+  }
+
+  const files = await listPullRequestFileChanges(octokit, {
+    owner: input.owner,
+    pullNumber: input.pullNumber,
+    repo: input.repo,
+  });
+  await options.reviewStore.recordPatchset(
+    {
+      owner: input.owner,
+      pullNumber: input.pullNumber,
+      repo: input.repo,
+    },
+    {
+      actor: input.sender,
+      baseSha: getPullRequestBaseSha(payload),
+      createdAt: input.now,
+      eventType: getPatchsetEventType(payload),
+      files: files.map(mapReviewPatchsetFile),
+      forcePush: getSynchronizeForced(payload),
+      headSha: input.headSha,
+      parentSha: getSynchronizeBeforeSha(payload),
+    },
+  );
+}
+
+function mapReviewPatchsetFile(file: PullRequestFileChange): ReviewPatchsetInput["files"][number] {
+  return {
+    additions: file.additions,
+    deletions: file.deletions,
+    patch: file.patch,
+    path: file.filename,
+    previousPath: file.previousFilename,
+    status: mapReviewFileStatus(file.status),
+  };
+}
+
+function mapReviewFileStatus(
+  status: PullRequestFileChange["status"],
+): ReviewPatchsetInput["files"][number]["status"] {
+  switch (status) {
+    case "added":
+      return "added";
+    case "removed":
+      return "deleted";
+    case "renamed":
+      return "renamed";
+    case "changed":
+    case "copied":
+    case "modified":
+      return "modified";
+  }
+}
+
+function getPatchsetEventType(payload: unknown): ReviewPatchsetInput["eventType"] {
+  const action = getPayloadAction(payload);
+  if (action === "opened" || action === "reopened" || action === "ready_for_review") {
+    return "opened";
+  }
+
+  return getSynchronizeForced(payload) ? "force_push" : "synchronize";
 }
 
 function getLabelNames(labels: Array<string | { name?: string }>): string[] {
@@ -666,6 +831,95 @@ function getSynchronizeBeforeSha(payload: unknown): string | undefined {
   }
 
   return typeof payload.before === "string" ? payload.before : undefined;
+}
+
+function getSynchronizeForced(payload: unknown): boolean {
+  if (typeof payload !== "object" || payload === null || !("forced" in payload)) {
+    return false;
+  }
+
+  return payload.forced === true;
+}
+
+function getPullRequestBaseSha(payload: unknown): string | undefined {
+  if (typeof payload !== "object" || payload === null || !("pull_request" in payload)) {
+    return undefined;
+  }
+
+  const pullRequest = payload.pull_request;
+  if (typeof pullRequest !== "object" || pullRequest === null || !("base" in pullRequest)) {
+    return undefined;
+  }
+
+  const base = pullRequest.base;
+  if (typeof base !== "object" || base === null || !("sha" in base)) {
+    return undefined;
+  }
+
+  return typeof base.sha === "string" ? base.sha : undefined;
+}
+
+function getPayloadAction(payload: unknown): string | undefined {
+  if (typeof payload !== "object" || payload === null || !("action" in payload)) {
+    return undefined;
+  }
+
+  return typeof payload.action === "string" ? payload.action : undefined;
+}
+
+function getReviewCommentSourceText(
+  diffHunk: string | undefined,
+  lineNumber: number | undefined,
+  side: "LEFT" | "RIGHT",
+): string | undefined {
+  if (diffHunk === undefined || lineNumber === undefined) {
+    return undefined;
+  }
+
+  let leftLineNumber: number | undefined;
+  let rightLineNumber: number | undefined;
+
+  for (const rawLine of diffHunk.split("\n")) {
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(rawLine);
+    if (hunk?.[1] !== undefined && hunk[2] !== undefined) {
+      leftLineNumber = Number.parseInt(hunk[1], 10);
+      rightLineNumber = Number.parseInt(hunk[2], 10);
+      continue;
+    }
+
+    if (leftLineNumber === undefined || rightLineNumber === undefined) {
+      continue;
+    }
+
+    if (rawLine.startsWith("+")) {
+      if (side === "RIGHT" && rightLineNumber === lineNumber) {
+        return rawLine.slice(1);
+      }
+      rightLineNumber += 1;
+      continue;
+    }
+
+    if (rawLine.startsWith("-")) {
+      if (side === "LEFT" && leftLineNumber === lineNumber) {
+        return rawLine.slice(1);
+      }
+      leftLineNumber += 1;
+      continue;
+    }
+
+    if (rawLine.startsWith(" ")) {
+      if (
+        (side === "LEFT" && leftLineNumber === lineNumber) ||
+        (side === "RIGHT" && rightLineNumber === lineNumber)
+      ) {
+        return rawLine.slice(1);
+      }
+      leftLineNumber += 1;
+      rightLineNumber += 1;
+    }
+  }
+
+  return undefined;
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
