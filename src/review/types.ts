@@ -115,7 +115,7 @@ export type ReviewActivity = {
   newCommentCount: number;
 };
 
-export type ReviewSnapshotMode = "demo" | "indexed" | "public";
+export type ReviewSnapshotMode = "indexed" | "public";
 
 export type ReviewSnapshotCapabilities = {
   limitations: string[];

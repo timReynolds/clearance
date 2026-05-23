@@ -28,12 +28,11 @@ import {
 } from "./github/index.js";
 import { createInstallationOctokit } from "./github/installation-client.js";
 import {
-  createDemoReviewSnapshot,
   createRandomToken,
   DrizzleReviewAuthStore,
   DrizzleReviewStore,
   getPublicThreadRootCommentId,
-  loadPublicReviewSnapshot,
+  loadReviewSnapshot,
   type AttentionPassRequest,
   type CreateThreadRequest,
   type MarkReviewedRequest,
@@ -160,7 +159,7 @@ async function handleMeApiRequest(
     authenticated: actor.authenticated,
     csrfToken: actor.csrfToken,
     loginUrl:
-      reviewOAuthApp === undefined || reviewAuthStore === undefined
+      reviewOAuthApp === undefined
         ? undefined
         : `/auth/github/start?returnTo=${encodeURIComponent(returnTo)}`,
     viewer:
@@ -172,9 +171,9 @@ async function handleGithubOAuthStart(
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
-  if (reviewOAuthApp === undefined || reviewAuthStore === undefined) {
+  if (reviewOAuthApp === undefined) {
     writeJson(response, 501, {
-      error: "GitHub OAuth requires GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, and DATABASE_URL",
+      error: "GitHub OAuth requires GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET",
     });
     return;
   }
@@ -207,9 +206,9 @@ async function handleGithubOAuthCallback(
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
-  if (reviewOAuthApp === undefined || reviewAuthStore === undefined) {
+  if (reviewOAuthApp === undefined) {
     writeJson(response, 501, {
-      error: "GitHub OAuth requires GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, and DATABASE_URL",
+      error: "GitHub OAuth requires GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET",
     });
     return;
   }
@@ -288,7 +287,7 @@ async function handleGithubOAuthCallback(
 async function handleLogout(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const sessionToken = parseCookies(request)[env.REVIEW_SESSION_COOKIE_NAME];
   if (sessionToken !== undefined) {
-    await reviewAuthStore?.deleteSession(sessionToken);
+    await reviewAuthStore.deleteSession(sessionToken);
   }
 
   appendSetCookie(response, clearCookie(env.REVIEW_SESSION_COOKIE_NAME, "/"));
@@ -312,39 +311,20 @@ async function handleReviewApiRequest(
 
   if (request.method === "GET" && route.action === undefined) {
     try {
-      const indexedSnapshot =
-        actor.authenticated && reviewStore !== undefined
-          ? await reviewStore.loadSnapshot(route, viewerLogin, {
-              fromPatchsetNumber: getOptionalPositiveInteger(url.searchParams.get("from")),
-              toPatchsetNumber: getOptionalPositiveInteger(url.searchParams.get("to")),
-            })
-          : undefined;
-      const snapshot =
-        (indexedSnapshot === undefined
-          ? undefined
-          : await addGithubPatchsetComparison(indexedSnapshot, route)) ??
-        (await loadPublicReviewSnapshot(
-          createGithubReadOctokit(actor.accessToken),
-          route,
-          viewerLogin,
-        ));
+      const snapshot = await loadReviewSnapshot({
+        enhanceIndexedSnapshot: addGithubPatchsetComparison,
+        options: {
+          fromPatchsetNumber: getOptionalPositiveInteger(url.searchParams.get("from")),
+          toPatchsetNumber: getOptionalPositiveInteger(url.searchParams.get("to")),
+        },
+        publicOctokit: createGithubReadOctokit(actor.accessToken),
+        ref: route,
+        reviewStore,
+        viewerLogin,
+      });
 
       if (snapshot !== undefined) {
         writeJson(response, 200, snapshot);
-        return;
-      }
-
-      if (isDemoReviewRoute(route)) {
-        writeJson(
-          response,
-          200,
-          createDemoReviewSnapshot({
-            owner: route.owner,
-            pullNumber: route.pullNumber,
-            repo: route.repo,
-            viewerLogin,
-          }),
-        );
         return;
       }
 
@@ -353,7 +333,7 @@ async function handleReviewApiRequest(
       });
     } catch (error) {
       writeJson(response, 502, {
-        error: getErrorMessage(error, "failed to load public pull request from GitHub"),
+        error: getErrorMessage(error, "failed to load review snapshot"),
       });
     }
     return;
@@ -380,7 +360,7 @@ async function handleReviewApiRequest(
       return;
     }
 
-    const persisted = (await reviewStore?.markFileReviewed(route, actorLogin, body)) ?? false;
+    const persisted = await reviewStore.markFileReviewed(route, actorLogin, body);
     let githubMirrored = false;
     if (actor.accessToken !== undefined) {
       const octokit = createUserOctokit(actor.accessToken);
@@ -403,13 +383,13 @@ async function handleReviewApiRequest(
       return;
     }
 
-    const persisted = (await reviewStore?.passAttention(route, actorLogin, body)) ?? false;
+    const persisted = await reviewStore.passAttention(route, actorLogin, body);
     writeJson(response, 202, { ok: true, persisted });
     return;
   }
 
   if (request.method === "POST" && route.action === "attention/not-my-turn") {
-    const persisted = (await reviewStore?.markNotMyTurn(route, actorLogin)) ?? false;
+    const persisted = await reviewStore.markNotMyTurn(route, actorLogin);
     writeJson(response, 202, { ok: true, persisted });
     return;
   }
@@ -435,14 +415,13 @@ async function handleReviewApiRequest(
     const commentId = randomUUID();
     const marker = { commentId, threadId };
     const github = await mirrorCreateThread(actor.accessToken, route, body, marker);
-    const persisted =
-      (await reviewStore?.recordCreatedThread(route, actorLogin, body, {
-        commentId,
-        github,
-        marker: serializeReviewThreadMarker(marker),
-        threadId,
-        threadMarker: serializeReviewThreadMarker({ threadId }),
-      })) ?? false;
+    const persisted = await reviewStore.recordCreatedThread(route, actorLogin, body, {
+      commentId,
+      github,
+      marker: serializeReviewThreadMarker(marker),
+      threadId,
+      threadMarker: serializeReviewThreadMarker({ threadId }),
+    });
 
     if (github === undefined && !persisted) {
       writeJson(response, 401, {
@@ -475,12 +454,11 @@ async function handleReviewApiRequest(
     const commentId = randomUUID();
     const marker = { commentId, threadId: route.threadId };
     const github = await mirrorThreadReply(actor.accessToken, route, route.threadId, body, marker);
-    const persisted =
-      (await reviewStore?.recordThreadReply(route, actorLogin, route.threadId, body, {
-        commentId,
-        github,
-        marker: serializeReviewThreadMarker(marker),
-      })) ?? false;
+    const persisted = await reviewStore.recordThreadReply(route, actorLogin, route.threadId, body, {
+      commentId,
+      github,
+      marker: serializeReviewThreadMarker(marker),
+    });
 
     if (github === undefined && !persisted) {
       writeJson(response, 401, {
@@ -503,8 +481,7 @@ async function handleReviewApiRequest(
     route.action === "threads/resolve"
   ) {
     const githubResolved = await mirrorThreadResolution(actor.accessToken, route, route.threadId);
-    const persisted =
-      (await reviewStore?.resolveThread(route, actorLogin, route.threadId)) ?? false;
+    const persisted = await reviewStore.resolveThread(route, actorLogin, route.threadId);
     if (!githubResolved && !persisted) {
       writeJson(response, 409, {
         error: "Resolving imported public threads requires indexed GitHub review-thread state.",
@@ -528,17 +505,13 @@ async function handleReviewApiRequest(
       route,
       body?.body ?? "Reviewed in Clearance.",
     );
-    await reviewStore?.markNotMyTurn(route, actorLogin);
+    await reviewStore.markNotMyTurn(route, actorLogin);
 
     writeJson(response, 202, { githubMirrored: true, ok: true });
     return;
   }
 
   writeJson(response, 404, { error: "review action not found" });
-}
-
-function isDemoReviewRoute(route: Pick<ReviewPullRequestApiRoute, "owner" | "repo">): boolean {
-  return route.owner === "acme" && route.repo === "repo";
 }
 
 /*
@@ -787,7 +760,7 @@ function getRequestUrl(request: IncomingMessage): URL {
 async function getReviewActor(request: IncomingMessage): Promise<ReviewActor> {
   const cookies = parseCookies(request);
   const sessionToken = cookies[env.REVIEW_SESSION_COOKIE_NAME];
-  if (sessionToken !== undefined && reviewAuthStore !== undefined) {
+  if (sessionToken !== undefined) {
     const user = await reviewAuthStore.loadSession(sessionToken);
     if (user !== undefined) {
       return {
@@ -825,7 +798,7 @@ async function requireReviewCsrf(
   response: ServerResponse,
   actor: ReviewActor,
 ): Promise<boolean> {
-  if (!actor.authenticated || actor.sessionToken === undefined || reviewAuthStore === undefined) {
+  if (!actor.authenticated || actor.sessionToken === undefined) {
     return true;
   }
 
@@ -865,7 +838,7 @@ async function mirrorThreadReply(
     return undefined;
   }
 
-  const githubRef = await reviewStore?.loadThreadGithubRef(ref, threadId);
+  const githubRef = await reviewStore.loadThreadGithubRef(ref, threadId);
   const firstCommentId = githubRef?.firstCommentId ?? getPublicThreadRootCommentId(threadId);
   if (firstCommentId === undefined) {
     return undefined;
@@ -889,7 +862,7 @@ async function mirrorThreadResolution(
     return false;
   }
 
-  const githubRef = await reviewStore?.loadThreadGithubRef(ref, threadId);
+  const githubRef = await reviewStore.loadThreadGithubRef(ref, threadId);
   if (githubRef?.threadNodeId === undefined) {
     return false;
   }

@@ -46,10 +46,14 @@ export {
   type ReviewSessionInput,
   type ReviewTokenInput,
 } from "./auth.js";
-export { createDemoReviewSnapshot } from "./demo.js";
 export {
   getPublicThreadRootCommentId,
   loadPublicReviewSnapshot,
   type PublicPullRequestRef,
   type PublicPullRequestSnapshotOctokit,
 } from "./public-snapshot.js";
+export {
+  loadReviewSnapshot,
+  type LoadReviewSnapshotInput,
+  type ReviewSnapshotStore,
+} from "./snapshot-loader.js";

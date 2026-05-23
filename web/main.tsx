@@ -331,7 +331,7 @@ function App() {
             ) : (
               <span className="secondary-button disabled">
                 <Github size={15} />
-                Demo
+                Public
               </span>
             )}
             <label className={me?.authenticated ? "viewer locked" : "viewer"}>

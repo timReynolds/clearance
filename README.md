@@ -41,8 +41,8 @@ The app listens on `PORT` and receives GitHub webhook deliveries at `WEBHOOK_PAT
 After `npm run build`, the review UI is served from `/review/OWNER/REPO/pull/NUMBER`.
 For public GitHub pull requests, the review UI can render a read-mostly preview without the GitHub
 App installed by fetching current PR data from public GitHub APIs.
-Set `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `DATABASE_URL`, and the review secrets in
-`.env` to enable GitHub sign-in and mirrored review actions.
+`DATABASE_URL` is required at startup. Set `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and the
+review secrets in `.env` to enable GitHub sign-in and mirrored review actions.
 
 ## Required Checks
 

@@ -89,7 +89,7 @@ export type GithubHandlerStateStore = {
 };
 
 export type GithubHandlerReviewStore = {
-  ingestGithubReviewComment?(
+  ingestGithubReviewComment(
     ref: ReviewPullRequestRef,
     input: {
       authorLogin: string;
@@ -115,7 +115,7 @@ export type GithubHandlerReviewStore = {
 };
 
 export type GithubHandlerOptions = {
-  reviewStore?: GithubHandlerReviewStore;
+  reviewStore: GithubHandlerReviewStore;
   stateStore: GithubHandlerStateStore;
 };
 
@@ -301,7 +301,7 @@ export function registerGithubHandlers(
 
       const body = payload.comment.body ?? "";
       const marker = parseReviewThreadMarker(body);
-      if (marker === undefined || options.reviewStore?.ingestGithubReviewComment === undefined) {
+      if (marker === undefined) {
         await recordWebhookDelivery(options, id, name, payload.action, payload, "processed");
         return;
       }
@@ -512,10 +512,6 @@ async function recordReviewPatchset(
   octokit: GithubWorkflowOctokit,
   options: GithubHandlerOptions,
 ): Promise<void> {
-  if (options.reviewStore === undefined) {
-    return;
-  }
-
   const files = await listPullRequestFileChanges(octokit, {
     owner: input.owner,
     pullNumber: input.pullNumber,

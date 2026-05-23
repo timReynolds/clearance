@@ -44,8 +44,8 @@ Public preview is intentionally limited:
 
 - Only the current PR diff is available. Historical patchsets, force-push detection, and
   rebase-normalized comparisons require app indexing or future timeline backfill.
-- Review marks, since-last-visit state, and attention changes are not durable without
-  `DATABASE_URL`.
+- Review marks, since-last-visit state, and attention changes require the pull request to be
+  indexed by the app-backed database.
 - Commenting, replying, approving, and viewed-file mirroring require GitHub OAuth and the viewer's
   normal GitHub permissions.
 - Existing public review comments can be displayed, but resolving imported threads requires
@@ -93,8 +93,6 @@ The current implementation adds:
 - GitHub compare-backed patchset comparison controls for choosing `PS N` to `PS M` on indexed PRs,
   with indexed snapshots as a fallback when GitHub cannot compare the recorded SHAs.
 - Since-last-visit comment activity on the review snapshot and UI, backed by per-user visit marks.
-- A demo snapshot fallback when no database state exists, so the UI can be evaluated locally before
-  a PR has been indexed.
 
 Next implementation step: backfill open PRs from GitHub timeline/review APIs so pre-install
 patchsets and externally-created review threads are reconstructed into the Clearance index, then

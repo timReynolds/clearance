@@ -171,7 +171,7 @@ function buildPublicReviewSnapshot(
       limitations: [
         "Only the current PR diff is available; historical patchsets need app indexing or timeline backfill.",
         "Force-push and rebase-only detection is unavailable from the public REST snapshot.",
-        "Review marks and attention changes are not durable without a configured Clearance database.",
+        "Review marks and attention changes require this pull request to be indexed by Clearance.",
         "Commenting, replying, approving, and viewed-file mirroring require GitHub OAuth and normal GitHub permissions.",
         "Thread resolution for existing public comments is read-only until GraphQL thread ids are indexed.",
       ],

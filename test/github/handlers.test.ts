@@ -47,7 +47,7 @@ describe("registerGithubHandlers", () => {
           async () => octokit,
         ),
       },
-      { stateStore },
+      createHandlerOptions(stateStore),
     );
 
     const payload = createPullRequestPayload("opened");
@@ -115,7 +115,7 @@ describe("registerGithubHandlers", () => {
           async () => octokit,
         ),
       },
-      { stateStore },
+      createHandlerOptions(stateStore),
     );
 
     await webhooks.receive({
@@ -151,7 +151,7 @@ describe("registerGithubHandlers", () => {
           async () => octokit,
         ),
       },
-      { stateStore },
+      createHandlerOptions(stateStore),
     );
 
     await webhooks.receive({
@@ -180,7 +180,7 @@ describe("registerGithubHandlers", () => {
           async () => octokit,
         ),
       },
-      { stateStore },
+      createHandlerOptions(stateStore),
     );
 
     await webhooks.receive({
@@ -238,7 +238,7 @@ describe("registerGithubHandlers", () => {
           async () => octokit,
         ),
       },
-      { stateStore },
+      createHandlerOptions(stateStore),
     );
 
     await webhooks.receive({
@@ -263,7 +263,7 @@ describe("registerGithubHandlers", () => {
     );
     const stateStore = createStateStore();
 
-    registerGithubHandlers(webhooks, { getInstallationOctokit }, { stateStore });
+    registerGithubHandlers(webhooks, { getInstallationOctokit }, createHandlerOptions(stateStore));
 
     await webhooks.receive({
       id: "delivery-id-1",
@@ -292,7 +292,7 @@ describe("registerGithubHandlers", () => {
           async () => octokit,
         ),
       },
-      { stateStore },
+      createHandlerOptions(stateStore),
     );
 
     await webhooks.receive({
@@ -364,7 +364,7 @@ describe("registerGithubHandlers", () => {
     const payload = createPullRequestPayload("opened");
     delete payload.installation;
 
-    registerGithubHandlers(webhooks, { getInstallationOctokit }, { stateStore });
+    registerGithubHandlers(webhooks, { getInstallationOctokit }, createHandlerOptions(stateStore));
 
     await webhooks.receive({
       id: "delivery-id",
@@ -390,7 +390,7 @@ describe("registerGithubHandlers", () => {
     );
     const stateStore = createStateStore({ beginWebhookDelivery: async () => false });
 
-    registerGithubHandlers(webhooks, { getInstallationOctokit }, { stateStore });
+    registerGithubHandlers(webhooks, { getInstallationOctokit }, createHandlerOptions(stateStore));
 
     await webhooks.receive({
       id: "delivery-id",
@@ -420,7 +420,7 @@ describe("registerGithubHandlers", () => {
           async () => octokit,
         ),
       },
-      { stateStore },
+      createHandlerOptions(stateStore),
     );
 
     await webhooks.receive({
@@ -479,9 +479,9 @@ describe("registerGithubHandlers", () => {
         },
       ],
     });
-    const reviewStore: GithubHandlerReviewStore = {
+    const reviewStore = createReviewStore({
       recordPatchset: vi.fn<GithubHandlerReviewStore["recordPatchset"]>(async () => 1),
-    };
+    });
     const stateStore = createStateStore();
 
     registerGithubHandlers(
@@ -653,6 +653,25 @@ function createStateStore(
   };
 
   return store;
+}
+
+function createHandlerOptions(
+  stateStore: GithubHandlerStateStore,
+  reviewStore = createReviewStore(),
+): { reviewStore: GithubHandlerReviewStore; stateStore: GithubHandlerStateStore } {
+  return { reviewStore, stateStore };
+}
+
+function createReviewStore(
+  overrides: Partial<GithubHandlerReviewStore> = {},
+): GithubHandlerReviewStore {
+  return {
+    ingestGithubReviewComment: vi.fn<GithubHandlerReviewStore["ingestGithubReviewComment"]>(
+      async () => true,
+    ),
+    recordPatchset: vi.fn<GithubHandlerReviewStore["recordPatchset"]>(async () => 1),
+    ...overrides,
+  };
 }
 
 function createWorkflowOctokit(options: { dryRun?: boolean } = {}): GithubWorkflowOctokit {
