@@ -1,10 +1,7 @@
-import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import { createRoot } from "react-dom/client";
 import { PatchDiff } from "@pierre/diffs/react";
 import type { SelectedLineRange } from "@pierre/diffs";
-import { FileTree, useFileTree } from "@pierre/trees/react";
-import type { GitStatus } from "@pierre/trees";
-import { Tabs } from "@base-ui/react/tabs";
 import { Tooltip } from "@base-ui/react/tooltip";
 import {
   Check,
@@ -128,6 +125,7 @@ function App() {
 
   const selectedFile =
     snapshot.files.find((file) => file.path === selectedPath) ?? snapshot.files[0];
+  const hasPatchsetControls = snapshot.patchsets.length > 1;
 
   function actionHeaders(hasJsonBody = false): Record<string, string> {
     return {
@@ -149,6 +147,13 @@ function App() {
   }
 
   function selectComparison(from: number, to: number): void {
+    if (
+      snapshot?.comparison.fromPatchsetNumber === from &&
+      snapshot.comparison.toPatchsetNumber === to
+    ) {
+      return;
+    }
+
     setComparisonSelection({ from, to });
     setSelectedPath(undefined);
     setCommentTarget(undefined);
@@ -355,16 +360,42 @@ function App() {
             tone={snapshot.attention.isViewerTurn ? "hot" : "muted"}
           />
           <StatusPill label={snapshot.capabilities.mode} tone="cool" />
-          <StatusPill label={`${snapshot.patchsets.length} patchsets`} tone="cool" />
+          {hasPatchsetControls ? (
+            <StatusPill label={`${snapshot.patchsets.length} patchsets`} tone="cool" />
+          ) : null}
           <StatusPill label={`${snapshot.comparison.fileCount} files`} tone="muted" />
           {snapshot.activity.newCommentCount > 0 ? (
             <StatusPill label={`${snapshot.activity.newCommentCount} new replies`} tone="hot" />
           ) : null}
           <span className="state-meta">
-            PS {snapshot.comparison.fromPatchsetNumber} to PS {snapshot.comparison.toPatchsetNumber}
+            {hasPatchsetControls
+              ? `PS ${snapshot.comparison.fromPatchsetNumber} to PS ${snapshot.comparison.toPatchsetNumber}`
+              : "Current diff"}
             <b> +{snapshot.comparison.additions}</b>
             <b> -{snapshot.comparison.deletions}</b>
           </span>
+          <div className="state-actions">
+            <button onClick={() => void notMyTurn()}>
+              <Eye size={15} />
+              Not my turn
+            </button>
+            <button onClick={() => void approveReview()}>
+              <Check size={15} />
+              Approve
+            </button>
+            <div className="state-pass">
+              <input
+                aria-label="Pass attention to"
+                onChange={(event) => setPassTarget(event.target.value)}
+                placeholder="github-user"
+                value={passTarget}
+              />
+              <button onClick={() => void passAttention()}>
+                <Send size={15} />
+                Pass
+              </button>
+            </div>
+          </div>
         </section>
 
         <div className="review-grid">
@@ -373,11 +404,7 @@ function App() {
               <span>Files</span>
               <span>{snapshot.files.length}</span>
             </div>
-            <div className="tree-toolbar">
-              <Search size={14} />
-              <span>Filter</span>
-            </div>
-            <ReviewFileTree
+            <ReviewFileList
               files={snapshot.files}
               onSelect={setSelectedPath}
               selectedPath={selectedFile?.path}
@@ -396,7 +423,9 @@ function App() {
           </aside>
 
           <main className="diff-pane">
-            <PatchsetRail onSelectComparison={selectComparison} snapshot={snapshot} />
+            {hasPatchsetControls ? (
+              <PatchsetRail onSelectComparison={selectComparison} snapshot={snapshot} />
+            ) : null}
             {selectedFile === undefined ? (
               <div className="empty-state">No changed files</div>
             ) : (
@@ -431,9 +460,6 @@ function App() {
                         enableGutterUtility: true,
                         hunkSeparators: "metadata",
                         lineHoverHighlight: "both",
-                        onGutterUtilityClick: (range: SelectedLineRange) => {
-                          setCommentTargetFromRange(selectedFile, range, setCommentTarget);
-                        },
                         overflow: "scroll",
                         theme: "github-dark-default",
                       }}
@@ -505,135 +531,59 @@ function App() {
               </>
             )}
           </main>
-
-          <aside className="right-pane">
-            <section className={snapshot.attention.isViewerTurn ? "turn on" : "turn"}>
-              <div>
-                <span>Attention</span>
-                <strong>{snapshot.attention.isViewerTurn ? "Your turn" : "Clear"}</strong>
-              </div>
-              <div className="turn-actions">
-                <button onClick={() => void notMyTurn()}>
-                  <Eye size={15} />
-                  Not my turn
-                </button>
-                <button onClick={() => void approveReview()}>
-                  <Check size={15} />
-                  Approve
-                </button>
-              </div>
-              <div className="pass-row">
-                <input
-                  aria-label="Pass attention to"
-                  onChange={(event) => setPassTarget(event.target.value)}
-                  placeholder="github-user"
-                  value={passTarget}
-                />
-                <button onClick={() => void passAttention()}>
-                  <Send size={15} />
-                  Pass
-                </button>
-              </div>
-            </section>
-
-            <Tabs.Root className="side-tabs" defaultValue="reviewers">
-              <Tabs.List className="tab-list">
-                <Tabs.Tab value="reviewers">People</Tabs.Tab>
-                <Tabs.Tab value="since">Delta</Tabs.Tab>
-              </Tabs.List>
-              <Tabs.Panel className="tab-panel" value="reviewers">
-                {snapshot.attention.members.map((member) => (
-                  <div className="person-row" key={member.login}>
-                    <Avatar login={member.login} />
-                    <div>
-                      <strong>{member.login}</strong>
-                      <span>{member.reason}</span>
-                    </div>
-                  </div>
-                ))}
-              </Tabs.Panel>
-              <Tabs.Panel className="tab-panel" value="since">
-                <DeltaBars files={snapshot.files} />
-              </Tabs.Panel>
-            </Tabs.Root>
-
-            <section className="context-panel">
-              <div className="pane-heading">
-                <span>Context</span>
-                <span>{snapshot.capabilities.mode}</span>
-              </div>
-              <p>
-                {snapshot.comparison.fileCount} files changed across PS{" "}
-                {snapshot.comparison.fromPatchsetNumber} to PS{" "}
-                {snapshot.comparison.toPatchsetNumber}.
-              </p>
-              <ul>
-                <li>Durable GitHub review threads</li>
-                <li>Patchset-aware file marks</li>
-                <li>Attention visible to every participant</li>
-                <li>{snapshot.activity.newCommentCount} comments since your last visit</li>
-              </ul>
-              {snapshot.capabilities.limitations.length > 0 ? (
-                <div className="limitations">
-                  <strong>Limited in this view</strong>
-                  <ul>
-                    {snapshot.capabilities.limitations.map((limitation) => (
-                      <li key={limitation}>{limitation}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-            </section>
-          </aside>
         </div>
       </div>
     </Tooltip.Provider>
   );
 }
 
-function ReviewFileTree(props: {
+function ReviewFileList(props: {
   files: ReviewFile[];
   onSelect(path: string): void;
   selectedPath?: string;
 }) {
-  const gitStatus = useMemo(
-    () =>
-      props.files.map((file) => ({
-        path: file.path,
-        status: mapGitStatus(file.status),
-      })),
-    [props.files],
-  );
-  const { model } = useFileTree({
-    fileTreeSearchMode: "hide-non-matches",
-    gitStatus,
-    icons: "minimal",
-    initialExpansion: "open",
-    initialSelectedPaths: props.selectedPath === undefined ? [] : [props.selectedPath],
-    onSelectionChange: (paths) => {
-      const path = paths[0];
-      if (path !== undefined) {
-        props.onSelect(path);
-      }
-    },
-    paths: props.files.map((file) => file.path),
-    renderRowDecoration: ({ item }) => {
-      const file = props.files.find((entry) => entry.path === item.path);
-      if (file === undefined) {
-        return null;
-      }
-
-      return { text: file.markState === "current" ? "✓" : file.markState === "stale" ? "!" : "" };
-    },
-    search: true,
-  });
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLowerCase();
+  const files =
+    normalizedQuery === ""
+      ? props.files
+      : props.files.filter((file) => file.path.toLowerCase().includes(normalizedQuery));
 
   return (
-    <FileTree
-      className="review-tree"
-      key={props.files.map((file) => `${file.path}:${file.markState}`).join("|")}
-      model={model}
-    />
+    <>
+      <label className="file-filter">
+        <Search size={14} />
+        <input
+          aria-label="Filter changed files"
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Filter changed files"
+          value={query}
+        />
+      </label>
+      <div className="file-list">
+        {files.length === 0 ? (
+          <div className="empty-file-list">No matching files</div>
+        ) : (
+          files.map((file) => (
+            <button
+              className={[
+                "file-row",
+                file.path === props.selectedPath ? "selected" : "",
+                file.markState,
+              ].join(" ")}
+              key={file.path}
+              onClick={() => props.onSelect(file.path)}
+              type="button"
+            >
+              <span className="file-row-path">{file.path}</span>
+              <span className="file-row-meta">
+                {file.status} · +{file.additions} -{file.deletions}
+              </span>
+            </button>
+          ))
+        )}
+      </div>
+    </>
   );
 }
 
@@ -698,6 +648,17 @@ function PatchsetRail({
                 patchset.patchsetNumber === snapshot.comparison.fromPatchsetNumber ? "from" : "",
                 patchset.patchsetNumber === snapshot.comparison.toPatchsetNumber ? "to" : "",
               ].join(" ")}
+              onClick={() => {
+                const nextFromPatchset = Math.min(
+                  snapshot.comparison.fromPatchsetNumber,
+                  patchset.patchsetNumber,
+                );
+                const nextToPatchset = Math.max(
+                  snapshot.comparison.fromPatchsetNumber,
+                  patchset.patchsetNumber,
+                );
+                onSelectComparison(nextFromPatchset, nextToPatchset);
+              }}
             >
               <span>PS {patchset.patchsetNumber}</span>
               <small>{patchset.headSha.slice(0, 7)}</small>
@@ -799,30 +760,6 @@ function ThreadList({
         </article>
       ))}
     </section>
-  );
-}
-
-function DeltaBars({ files }: { files: ReviewFile[] }) {
-  const max = Math.max(1, ...files.map((file) => file.additions + file.deletions));
-
-  return (
-    <div className="delta-bars">
-      {files.map((file) => (
-        <Tooltip.Root key={file.path}>
-          <Tooltip.Trigger
-            className={`delta ${file.markState}`}
-            style={{ height: `${Math.max(18, ((file.additions + file.deletions) / max) * 92)}px` }}
-          />
-          <Tooltip.Portal>
-            <Tooltip.Positioner sideOffset={6}>
-              <Tooltip.Popup className="tooltip">
-                {file.path} · +{file.additions} -{file.deletions}
-              </Tooltip.Popup>
-            </Tooltip.Positioner>
-          </Tooltip.Portal>
-        </Tooltip.Root>
-      ))}
-    </div>
   );
 }
 
@@ -949,20 +886,6 @@ function IconLink({
 
 function Avatar({ login }: { login: string }) {
   return <span className="avatar">{login.slice(0, 1).toUpperCase()}</span>;
-}
-
-function mapGitStatus(status: ReviewFile["status"]): GitStatus {
-  switch (status) {
-    case "added":
-      return "added";
-    case "deleted":
-      return "deleted";
-    case "renamed":
-      return "renamed";
-    case "modified":
-    case "unchanged":
-      return "modified";
-  }
 }
 
 function formatRelative(value: string): string {
