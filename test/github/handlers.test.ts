@@ -6,9 +6,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   registerGithubHandlers,
   type GithubHandlerStateStore,
+  type GithubHandlerReviewStore,
   type GithubInstallationClientFactory,
   type GithubWorkflowOctokit,
 } from "../../src/github/handlers.js";
+import { appendReviewThreadMarker } from "../../src/github/index.js";
 import { parseClearanceState, type ClearanceState } from "../../src/state/index.js";
 
 type GetBlob = GithubWorkflowOctokit["rest"]["git"]["getBlob"];
@@ -412,6 +414,159 @@ describe("registerGithubHandlers", () => {
       }),
     );
   });
+
+  it("indexes review patchsets from processed pull request webhooks", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const webhooks = new Webhooks({ secret: "test-secret" });
+    const octokit = createWorkflowOctokit();
+    vi.mocked(octokit.rest.pulls.listFiles).mockResolvedValue({
+      data: [
+        {
+          additions: 4,
+          deletions: 1,
+          filename: "src/index.ts",
+          patch: "@@ -1,1 +1,1 @@\n-export old\n+export next",
+          status: "modified",
+        },
+      ],
+    });
+    const reviewStore: GithubHandlerReviewStore = {
+      recordPatchset: vi.fn<GithubHandlerReviewStore["recordPatchset"]>(async () => 1),
+    };
+    const stateStore = createStateStore();
+
+    registerGithubHandlers(
+      webhooks,
+      {
+        getInstallationOctokit: vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
+          async () => octokit,
+        ),
+      },
+      { reviewStore, stateStore },
+    );
+
+    await webhooks.receive({
+      id: "delivery-id",
+      name: "pull_request",
+      payload: createPullRequestPayload("synchronize"),
+    } as unknown as EmitterWebhookEvent);
+
+    expect(reviewStore.recordPatchset).toHaveBeenCalledWith(
+      {
+        owner: "acme",
+        pullNumber: 42,
+        repo: "clearance",
+      },
+      expect.objectContaining({
+        actor: "author",
+        baseSha: "base-sha",
+        eventType: "synchronize",
+        files: [
+          {
+            additions: 4,
+            deletions: 1,
+            patch: "@@ -1,1 +1,1 @@\n-export old\n+export next",
+            path: "src/index.ts",
+            previousPath: undefined,
+            status: "modified",
+          },
+        ],
+        forcePush: false,
+        headSha: "head-sha",
+        parentSha: "before-sha",
+      }),
+    );
+  });
+
+  it("recovers Clearance review comments from GitHub review-comment webhooks", async () => {
+    const webhooks = new Webhooks({ secret: "test-secret" });
+    const reviewStore: GithubHandlerReviewStore = {
+      ingestGithubReviewComment: vi.fn<
+        NonNullable<GithubHandlerReviewStore["ingestGithubReviewComment"]>
+      >(async () => true),
+      recordPatchset: vi.fn<GithubHandlerReviewStore["recordPatchset"]>(async () => 1),
+    };
+    const stateStore = createStateStore();
+
+    registerGithubHandlers(
+      webhooks,
+      {
+        getInstallationOctokit: vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
+          async () => createWorkflowOctokit(),
+        ),
+      },
+      { reviewStore, stateStore },
+    );
+
+    const body = appendReviewThreadMarker("Looks durable.", {
+      commentId: "comment-1",
+      threadId: "thread-1",
+    });
+    await webhooks.receive({
+      id: "delivery-id",
+      name: "pull_request_review_comment",
+      payload: createReviewCommentPayload(body),
+    } as unknown as EmitterWebhookEvent);
+
+    expect(reviewStore.ingestGithubReviewComment).toHaveBeenCalledWith(
+      {
+        owner: "acme",
+        pullNumber: 42,
+        repo: "clearance",
+      },
+      expect.objectContaining({
+        authorLogin: "alice",
+        body: "Looks durable.",
+        githubCommentId: 300,
+        githubRootCommentId: 300,
+        line: 12,
+        path: "src/index.ts",
+        side: "RIGHT",
+        sourceText: "const durable = true;",
+        threadId: "thread-1",
+      }),
+    );
+  });
+
+  it("keeps the root GitHub comment id when ingesting mirrored replies", async () => {
+    const webhooks = new Webhooks({ secret: "test-secret" });
+    const reviewStore: GithubHandlerReviewStore = {
+      ingestGithubReviewComment: vi.fn<
+        NonNullable<GithubHandlerReviewStore["ingestGithubReviewComment"]>
+      >(async () => true),
+      recordPatchset: vi.fn<GithubHandlerReviewStore["recordPatchset"]>(async () => 1),
+    };
+    const stateStore = createStateStore();
+
+    registerGithubHandlers(
+      webhooks,
+      {
+        getInstallationOctokit: vi.fn<GithubInstallationClientFactory["getInstallationOctokit"]>(
+          async () => createWorkflowOctokit(),
+        ),
+      },
+      { reviewStore, stateStore },
+    );
+
+    const body = appendReviewThreadMarker("Reply stays threaded.", {
+      commentId: "comment-2",
+      threadId: "thread-1",
+    });
+    await webhooks.receive({
+      id: "delivery-id",
+      name: "pull_request_review_comment",
+      payload: createReviewCommentPayload(body, { id: 301, inReplyToId: 300 }),
+    } as unknown as EmitterWebhookEvent);
+
+    expect(reviewStore.ingestGithubReviewComment).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        githubCommentId: 301,
+        githubRootCommentId: 300,
+        threadId: "thread-1",
+      }),
+    );
+  });
 });
 
 type TestStateStore = GithubHandlerStateStore & {
@@ -577,6 +732,9 @@ function createPullRequestPayload(action: string) {
       id: 123,
     } as { id: number } | undefined,
     pull_request: {
+      base: {
+        sha: "base-sha",
+      },
       head: {
         sha: "head-sha",
       },
@@ -636,6 +794,42 @@ function createIssueCommentPayload(body: string, commentId = 200) {
     },
     sender: {
       login: "admin",
+    },
+  };
+}
+
+function createReviewCommentPayload(
+  body: string,
+  options: { id?: number; inReplyToId?: number } = {},
+) {
+  const id = options.id ?? 300;
+  return {
+    action: "created",
+    comment: {
+      body,
+      created_at: "2026-05-23T11:00:00.000Z",
+      diff_hunk:
+        "@@ -10,4 +10,4 @@\n const keep = true;\n const still = true;\n-const durable = false;\n+const durable = true;",
+      html_url: `https://github.com/acme/clearance/pull/42#discussion_r${id}`,
+      id,
+      in_reply_to_id: options.inReplyToId,
+      line: 12,
+      node_id: "COMMENT_NODE",
+      path: "src/index.ts",
+      side: "RIGHT",
+      user: {
+        login: "alice",
+      },
+    },
+    pull_request: {
+      number: 42,
+    },
+    repository: {
+      full_name: "acme/clearance",
+      name: "clearance",
+      owner: {
+        login: "acme",
+      },
     },
   };
 }

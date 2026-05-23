@@ -25,15 +25,22 @@ Use the least permissions that cover the workflows Clearance performs:
 - **Issues: read/write**: create and update the sticky PR comment.
 - **Commit statuses: read/write**: set `clearance/config` and `clearance/review`.
 
+Clearance Review also uses GitHub-native review surfaces. OAuth-backed user writes use the
+GitHub App's web flow to create review comments, replies, approvals, thread resolution, and
+viewed-file mirroring as the signed-in reviewer.
+
 ## 3. Subscribe to Webhook Events
 
 Subscribe to:
 
 - Pull request
 - Pull request review
+- Pull request review comment
 - Issue comment
 
-The server handles `opened`, `reopened`, `ready_for_review`, and `synchronize` pull request actions, submitted pull request reviews, and created issue comments containing `@clearance override` or `@clearance override revoke`.
+The server handles `opened`, `reopened`, `ready_for_review`, and `synchronize` pull request
+actions, submitted pull request reviews, Clearance-marked pull request review comments, and created
+issue comments containing `@clearance override` or `@clearance override revoke`.
 
 ## 4. Install the App
 
@@ -47,6 +54,8 @@ Set environment variables:
 
 ```sh
 GITHUB_APP_ID=12345
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
 GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
 GITHUB_WEBHOOK_SECRET=change-me
 DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres
@@ -57,11 +66,19 @@ OUTBOX_MAX_ATTEMPTS=5
 OUTBOX_POLL_INTERVAL_MS=0
 PORT=3000
 WEBHOOK_PATH=/api/github/webhooks
+REVIEW_SESSION_SECRET=at-least-32-random-characters
+REVIEW_TOKEN_ENCRYPTION_KEY=at-least-32-random-characters
 ```
 
 Private keys may contain escaped newlines. The app normalizes `\n` sequences at startup.
 
 `DATABASE_URL` should point at your Supabase Postgres database. For a long-running host such as Fly or Cloudflare Containers, prefer a direct Supabase Postgres connection or Supavisor session mode. Leave `DATABASE_PREPARE_STATEMENTS=false` unless you know the connection path supports prepared statements.
+
+Set `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` from the GitHub App's general settings to enable
+`/auth/github/start`. Use a public callback URL of
+`https://YOUR_HOST/auth/github/callback`. `REVIEW_SESSION_SECRET` signs review sessions, and
+`REVIEW_TOKEN_ENCRYPTION_KEY` encrypts stored user tokens; if omitted, the webhook secret is used as
+a fallback for local development.
 
 ## 6. Apply Database Migrations
 
@@ -96,6 +113,12 @@ Run:
 
 ```sh
 npm start
+```
+
+The same HTTP process serves the built review workspace at:
+
+```text
+https://YOUR_HOST/review/OWNER/REPO/pull/NUMBER
 ```
 
 Run one escalation sweep:
