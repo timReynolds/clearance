@@ -455,13 +455,16 @@ function App() {
                     <PatchDiff
                       disableWorkerPool
                       options={{
-                        diffIndicators: "classic",
+                        diffIndicators: "bars",
                         diffStyle: "unified",
                         enableGutterUtility: true,
-                        hunkSeparators: "metadata",
+                        hunkSeparators: "line-info-basic",
                         lineHoverHighlight: "both",
                         overflow: "scroll",
-                        theme: "github-dark-default",
+                        theme: {
+                          dark: "pierre-dark",
+                          light: "pierre-light",
+                        },
                       }}
                       patch={selectedFile.patch}
                       renderGutterUtility={(getHoveredLine) => (
