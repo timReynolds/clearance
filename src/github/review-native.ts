@@ -35,6 +35,8 @@ export type GithubReviewCommentMirror = {
   url?: string;
 };
 
+export type GithubPullRequestReviewEvent = "APPROVE" | "COMMENT" | "REQUEST_CHANGES";
+
 export function appendReviewThreadMarker(body: string, marker: ReviewThreadMarker): string {
   return `${body.trim()}\n\n${serializeReviewThreadMarker(marker)}\n`;
 }
@@ -166,9 +168,17 @@ export async function submitGithubPullRequestApproval(
   ref: GithubReviewPullRequestRef,
   body: string | undefined,
 ): Promise<void> {
+  await submitGithubPullRequestReview(octokit, ref, { body, event: "APPROVE" });
+}
+
+export async function submitGithubPullRequestReview(
+  octokit: Pick<GithubNativeReviewOctokit, "request">,
+  ref: GithubReviewPullRequestRef,
+  input: { body?: string; event: GithubPullRequestReviewEvent },
+): Promise<void> {
   await octokit.request("POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
-    body,
-    event: "APPROVE",
+    body: input.body,
+    event: input.event,
     owner: ref.owner,
     pull_number: ref.pullNumber,
     repo: ref.repo,
@@ -216,6 +226,25 @@ export async function findGithubReviewThreadNodeId(
   commentNodeId: string,
 ): Promise<string | undefined> {
   return findGithubReviewThreadNodeIdPage(octokit, ref, commentNodeId);
+}
+
+export async function findGithubReviewThreadNodeIdForComment(
+  octokit: Pick<GithubNativeReviewOctokit, "graphql" | "request">,
+  ref: GithubReviewPullRequestRef,
+  commentId: number,
+): Promise<string | undefined> {
+  const response = await octokit.request<{ node_id?: string }>(
+    "GET /repos/{owner}/{repo}/pulls/comments/{comment_id}",
+    {
+      comment_id: commentId,
+      owner: ref.owner,
+      repo: ref.repo,
+    },
+  );
+
+  return response.data.node_id === undefined
+    ? undefined
+    : findGithubReviewThreadNodeId(octokit, ref, response.data.node_id);
 }
 
 async function findGithubReviewThreadNodeIdPage(

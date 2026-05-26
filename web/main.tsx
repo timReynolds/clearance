@@ -1,28 +1,43 @@
 import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import { createRoot } from "react-dom/client";
 import { PatchDiff } from "@pierre/diffs/react";
-import type { SelectedLineRange } from "@pierre/diffs";
+import type {
+  DiffIndicators,
+  DiffLineAnnotation,
+  LineDiffTypes,
+  SelectedLineRange,
+} from "@pierre/diffs";
 import { Tooltip } from "@base-ui/react/tooltip";
 import {
   Check,
+  ChevronDown,
   ChevronRight,
   CircleAlert,
-  Eye,
+  ExternalLink,
   GitBranch,
   Github,
   LogIn,
+  LogOut,
   MessageSquare,
   RefreshCw,
   Search,
   Send,
-  ShieldCheck,
+  SlidersHorizontal,
 } from "lucide-react";
 
-import type { ReviewFile, ReviewSnapshot } from "../src/review/types";
+import type { ReviewFile, ReviewSnapshot, ReviewThread } from "../src/review/types";
 // oxlint-disable-next-line import/no-unassigned-import
 import "./styles.css";
 
 const defaultViewerLogin = readLocalPreference("clearance.viewer") ?? "tim";
+const defaultDiffOptions: DiffViewerOptions = {
+  backgrounds: true,
+  diffStyle: "unified",
+  indicators: "bars",
+  lineDiffType: "word-alt",
+  lineNumbers: true,
+  wrapping: false,
+};
 
 function App() {
   const route = parseReviewRoute(window.location.pathname);
@@ -30,10 +45,13 @@ function App() {
   const [me, setMe] = useState<MeResponse | undefined>();
   const [snapshot, setSnapshot] = useState<ReviewSnapshot | undefined>();
   const [selectedPath, setSelectedPath] = useState<string | undefined>();
-  const [draftComment, setDraftComment] = useState("");
+  const [draftComments, setDraftComments] = useState<Record<string, string>>({});
+  const [reviewBody, setReviewBody] = useState("");
   const [commentTarget, setCommentTarget] = useState<CommentTarget | undefined>();
   const [passTarget, setPassTarget] = useState("");
   const [actionError, setActionError] = useState<string | undefined>();
+  const [diffOptions, setDiffOptions] = useState(readDiffOptions);
+  const [tokenHover, setTokenHover] = useState<TokenHover | undefined>();
   const [comparisonSelection, setComparisonSelection] = useState<{
     from?: number;
     to?: number;
@@ -44,6 +62,10 @@ function App() {
   useEffect(() => {
     writeLocalPreference("clearance.viewer", viewerLogin);
   }, [viewerLogin]);
+
+  useEffect(() => {
+    writeLocalPreference("clearance.diffOptions", JSON.stringify(diffOptions));
+  }, [diffOptions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -123,9 +145,12 @@ function App() {
     );
   }
 
-  const selectedFile =
-    snapshot.files.find((file) => file.path === selectedPath) ?? snapshot.files[0];
   const hasPatchsetControls = snapshot.patchsets.length > 1;
+  const canShowTurnIndicator =
+    me?.authenticated === true && snapshot.capabilities.mode === "indexed";
+  const canUseReviewerActions = canShowTurnIndicator && snapshot.attention.isViewerTurn;
+  const canMarkReviewed = me?.authenticated === true && snapshot.capabilities.mode === "indexed";
+  const threadStatsByPath = buildFileThreadStatsByPath(snapshot.threads);
 
   function actionHeaders(hasJsonBody = false): Record<string, string> {
     return {
@@ -157,6 +182,41 @@ function App() {
     setComparisonSelection({ from, to });
     setSelectedPath(undefined);
     setCommentTarget(undefined);
+  }
+
+  function jumpToFile(path: string): void {
+    setSelectedPath(path);
+    window.requestAnimationFrame(() => {
+      document.getElementById(fileSectionId(path))?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+  }
+
+  function updateDraftComment(path: string, value: string): void {
+    setDraftComments((current) => ({
+      ...current,
+      [path]: value,
+    }));
+  }
+
+  function clearDraftComment(path: string): void {
+    setDraftComments((current) => {
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
+  }
+
+  function updateDiffOption<T extends keyof DiffViewerOptions>(
+    key: T,
+    value: DiffViewerOptions[T],
+  ): void {
+    setDiffOptions((current) => ({
+      ...current,
+      [key]: value,
+    }));
   }
 
   async function postJson(path: string, body?: unknown): Promise<ClientResponse> {
@@ -197,27 +257,6 @@ function App() {
     );
   }
 
-  async function notMyTurn(): Promise<void> {
-    setActionError(undefined);
-    const response = await postJson("/attention/not-my-turn");
-    if (!response.ok) {
-      setActionError(await readActionError(response));
-      return;
-    }
-
-    setSnapshot((current) =>
-      current === undefined
-        ? current
-        : {
-            ...current,
-            attention: {
-              isViewerTurn: false,
-              members: current.attention.members.filter((member) => member.login !== viewerLogin),
-            },
-          },
-    );
-  }
-
   async function passAttention(): Promise<void> {
     const targetLogin = passTarget.trim();
     if (targetLogin === "") {
@@ -236,31 +275,34 @@ function App() {
     await refreshReview();
   }
 
-  async function createThread(): Promise<void> {
+  async function createThread(
+    file: ReviewFile,
+    anchor: ThreadAnchorMode = "selected-line",
+  ): Promise<void> {
     const currentSnapshot = snapshot;
-    if (currentSnapshot === undefined || selectedFile === undefined || draftComment.trim() === "") {
+    const draftComment = draftComments[file.path] ?? "";
+    if (currentSnapshot === undefined || draftComment.trim() === "") {
       return;
     }
 
+    const useLineTarget = anchor === "selected-line" && commentTarget?.path === file.path;
+    setSelectedPath(file.path);
     setActionError(undefined);
     const response = await postJson("/threads", {
       body: draftComment.trim(),
       commitSha: currentSnapshot.pullRequest.headSha,
-      filePath: selectedFile.path,
-      line: commentTarget?.path === selectedFile.path ? commentTarget.line : undefined,
+      filePath: file.path,
+      line: useLineTarget ? commentTarget.line : undefined,
       patchsetNumber: currentSnapshot.comparison.toPatchsetNumber,
-      side: commentTarget?.path === selectedFile.path ? commentTarget.side : undefined,
-      sourceText:
-        commentTarget?.path === selectedFile.path
-          ? commentTarget.sourceText
-          : selectedFile.patch?.slice(0, 600),
+      side: useLineTarget ? commentTarget.side : undefined,
+      sourceText: useLineTarget ? commentTarget.sourceText : file.patch?.slice(0, 600),
     });
     if (!response.ok) {
       setActionError(await readActionError(response));
       return;
     }
 
-    setDraftComment("");
+    clearDraftComment(file.path);
     setCommentTarget(undefined);
     await refreshReview();
   }
@@ -288,19 +330,40 @@ function App() {
       return;
     }
 
-    await refreshReview();
+    const payload = (await response.json()) as { githubResolved?: boolean; persisted?: boolean };
+    setSnapshot((current) =>
+      current === undefined
+        ? current
+        : {
+            ...current,
+            threads: current.threads.map((thread) =>
+              thread.id === threadId ? { ...thread, status: "resolved" } : thread,
+            ),
+          },
+    );
+    if (payload.persisted === true) {
+      await refreshReview();
+    }
   }
 
-  async function approveReview(): Promise<void> {
+  async function submitReview(event: ReviewEvent): Promise<void> {
+    const body = reviewBody.trim();
+    if (event !== "APPROVE" && body === "") {
+      setActionError("Add a review summary first.");
+      return;
+    }
+
     setActionError(undefined);
-    const response = await postJson("/reviews/approve", {
-      body: "Reviewed in Clearance.",
+    const response = await postJson("/reviews", {
+      body: body === "" ? undefined : body,
+      event,
     });
     if (!response.ok) {
       setActionError(await readActionError(response));
       return;
     }
 
+    setReviewBody("");
     await refreshReview();
   }
 
@@ -309,8 +372,7 @@ function App() {
       <div className="app-shell">
         <header className="topbar">
           <div className="brand">
-            <ShieldCheck size={20} />
-            <span>Clearance Review</span>
+            <span>Clearance</span>
           </div>
           <div className="pr-title">
             <a
@@ -323,11 +385,16 @@ function App() {
             <span>{snapshot.pullRequest.title}</span>
           </div>
           <div className="top-actions">
+            <a className="github-open" href={snapshot.pullRequest.htmlUrl}>
+              <Github size={16} />
+              <span>Open in GitHub</span>
+              <ExternalLink size={13} />
+            </a>
             {me?.authenticated ? (
-              <a className="auth-pill" href="/auth/logout">
-                <Avatar login={me.viewer?.login ?? viewerLogin} />
-                <span>{me.viewer?.login ?? viewerLogin}</span>
-              </a>
+              <AccountMenu
+                avatarUrl={me.viewer?.avatarUrl}
+                login={me.viewer?.login ?? viewerLogin}
+              />
             ) : me?.loginUrl !== undefined ? (
               <a className="secondary-button" href={me.loginUrl}>
                 <LogIn size={15} />
@@ -339,202 +406,141 @@ function App() {
                 Public
               </span>
             )}
-            <label className={me?.authenticated ? "viewer locked" : "viewer"}>
-              <span>@</span>
-              <input
-                aria-label="Viewer"
-                disabled={me?.authenticated}
-                onChange={(event) => setViewerLogin(event.target.value)}
-                value={viewerLogin}
-              />
-            </label>
-            <IconLink href={snapshot.pullRequest.htmlUrl} label="Open on GitHub">
-              <Github size={17} />
-            </IconLink>
           </div>
         </header>
 
         <section className="statebar">
-          <StatusPill
-            label={snapshot.attention.isViewerTurn ? "Your turn" : "Not your turn"}
-            tone={snapshot.attention.isViewerTurn ? "hot" : "muted"}
-          />
-          <StatusPill label={snapshot.capabilities.mode} tone="cool" />
-          {hasPatchsetControls ? (
-            <StatusPill label={`${snapshot.patchsets.length} patchsets`} tone="cool" />
-          ) : null}
-          <StatusPill label={`${snapshot.comparison.fileCount} files`} tone="muted" />
-          {snapshot.activity.newCommentCount > 0 ? (
-            <StatusPill label={`${snapshot.activity.newCommentCount} new replies`} tone="hot" />
-          ) : null}
-          <span className="state-meta">
-            {hasPatchsetControls
-              ? `PS ${snapshot.comparison.fromPatchsetNumber} to PS ${snapshot.comparison.toPatchsetNumber}`
-              : "Current diff"}
-            <b> +{snapshot.comparison.additions}</b>
-            <b> -{snapshot.comparison.deletions}</b>
-          </span>
-          <div className="state-actions">
-            <button onClick={() => void notMyTurn()}>
-              <Eye size={15} />
-              Not my turn
-            </button>
-            <button onClick={() => void approveReview()}>
-              <Check size={15} />
-              Approve
-            </button>
-            <div className="state-pass">
-              <input
-                aria-label="Pass attention to"
-                onChange={(event) => setPassTarget(event.target.value)}
-                placeholder="github-user"
-                value={passTarget}
-              />
-              <button onClick={() => void passAttention()}>
-                <Send size={15} />
-                Pass
-              </button>
-            </div>
+          <div className="state-summary">
+            {canShowTurnIndicator ? (
+              <span className={`turn-indicator ${snapshot.attention.isViewerTurn ? "active" : ""}`}>
+                <i />
+                {snapshot.attention.isViewerTurn ? "Your turn" : "Not your turn"}
+              </span>
+            ) : null}
+            <StatusPill label={snapshot.capabilities.mode} tone="cool" />
+            {hasPatchsetControls ? (
+              <StatusPill label={`${snapshot.patchsets.length} patchsets`} tone="cool" />
+            ) : null}
+            <StatusPill label={`${snapshot.comparison.fileCount} files`} tone="muted" />
+            {snapshot.activity.newCommentCount > 0 ? (
+              <StatusPill label={`${snapshot.activity.newCommentCount} new replies`} tone="hot" />
+            ) : null}
+            <span className="state-meta">
+              {hasPatchsetControls
+                ? `PS ${snapshot.comparison.fromPatchsetNumber} to PS ${snapshot.comparison.toPatchsetNumber}`
+                : "Current diff"}
+              <b> +{snapshot.comparison.additions}</b>
+              <b> -{snapshot.comparison.deletions}</b>
+            </span>
           </div>
+          {canUseReviewerActions ? (
+            <div className="state-actions">
+              {actionError === undefined ? null : (
+                <span className="state-error">{actionError}</span>
+              )}
+              <details className="review-menu">
+                <summary className="review-button">
+                  <Check size={15} />
+                  Review
+                  <ChevronDown size={14} />
+                </summary>
+                <div className="review-popover">
+                  <textarea
+                    aria-label="Review summary"
+                    onChange={(event) => setReviewBody(event.target.value)}
+                    placeholder="Add a review summary"
+                    value={reviewBody}
+                  />
+                  <div className="review-options">
+                    <button onClick={() => void submitReview("COMMENT")}>
+                      <MessageSquare size={15} />
+                      Comment
+                    </button>
+                    <button onClick={() => void submitReview("APPROVE")}>
+                      <Check size={15} />
+                      Approve
+                    </button>
+                    <button onClick={() => void submitReview("REQUEST_CHANGES")}>
+                      <CircleAlert size={15} />
+                      Request changes
+                    </button>
+                  </div>
+                </div>
+              </details>
+              <details className="pass-menu">
+                <summary className="review-button">
+                  <Send size={15} />
+                  Pass
+                  <ChevronDown size={14} />
+                </summary>
+                <div className="pass-popover">
+                  <label>
+                    <span>Pass to</span>
+                    <input
+                      aria-label="Pass attention to"
+                      onChange={(event) => setPassTarget(event.target.value)}
+                      placeholder="Reviewer login"
+                      value={passTarget}
+                    />
+                  </label>
+                  <button onClick={() => void passAttention()}>
+                    <Send size={15} />
+                    Pass
+                  </button>
+                </div>
+              </details>
+            </div>
+          ) : null}
         </section>
 
         <div className="review-grid">
           <aside className="file-pane">
-            <div className="pane-heading">
-              <span>Files</span>
-              <span>{snapshot.files.length}</span>
-            </div>
             <ReviewFileList
               files={snapshot.files}
-              onSelect={setSelectedPath}
-              selectedPath={selectedFile?.path}
+              onSelect={jumpToFile}
+              selectedPath={selectedPath}
+              threadStatsByPath={threadStatsByPath}
             />
-            <div className="file-legend">
-              <span>
-                <i className="dot current" /> current
-              </span>
-              <span>
-                <i className="dot stale" /> stale
-              </span>
-              <span>
-                <i className="dot unreviewed" /> open
-              </span>
-            </div>
           </aside>
 
           <main className="diff-pane">
+            <DiffToolbar
+              fileCount={snapshot.files.length}
+              onChange={updateDiffOption}
+              options={diffOptions}
+            />
             {hasPatchsetControls ? (
               <PatchsetRail onSelectComparison={selectComparison} snapshot={snapshot} />
             ) : null}
-            {selectedFile === undefined ? (
+            {snapshot.files.length === 0 ? (
               <div className="empty-state">No changed files</div>
             ) : (
-              <>
-                <div className="file-header">
-                  <div>
-                    <strong>{selectedFile.path}</strong>
-                    <span>
-                      {selectedFile.status} · +{selectedFile.additions} -{selectedFile.deletions}
-                      {commentTarget?.path === selectedFile.path
-                        ? ` · commenting on line ${commentTarget.line}`
-                        : ""}
-                    </span>
-                  </div>
-                  <button
-                    className="primary-button"
-                    onClick={() => void markReviewed(selectedFile)}
-                  >
-                    <Check size={15} />
-                    Mark reviewed
-                  </button>
-                </div>
-                <div className="diff-scroll">
-                  {selectedFile.patch === undefined ? (
-                    <pre className="no-patch">Patch content has not been indexed yet.</pre>
-                  ) : (
-                    <PatchDiff
-                      disableWorkerPool
-                      options={{
-                        diffIndicators: "bars",
-                        diffStyle: "unified",
-                        enableGutterUtility: true,
-                        hunkSeparators: "line-info-basic",
-                        lineHoverHighlight: "both",
-                        overflow: "scroll",
-                        theme: {
-                          dark: "pierre-dark",
-                          light: "pierre-light",
-                        },
-                      }}
-                      patch={selectedFile.patch}
-                      renderGutterUtility={(getHoveredLine) => (
-                        <button
-                          aria-label="Comment on line"
-                          className="gutter-comment"
-                          onClick={() => {
-                            const hoveredLine = getHoveredLine();
-                            if (hoveredLine !== undefined) {
-                              setCommentTargetFromRange(
-                                selectedFile,
-                                {
-                                  end: hoveredLine.lineNumber,
-                                  endSide: hoveredLine.side,
-                                  side: hoveredLine.side,
-                                  start: hoveredLine.lineNumber,
-                                },
-                                setCommentTarget,
-                              );
-                            }
-                          }}
-                          type="button"
-                        >
-                          <MessageSquare size={12} />
-                        </button>
-                      )}
-                      selectedLines={getSelectedLineRange(selectedFile, commentTarget)}
-                    />
-                  )}
-                  <section className="composer">
-                    {commentTarget?.path === selectedFile.path ? (
-                      <div className="comment-target">
-                        <span>
-                          Line {commentTarget.line} ·{" "}
-                          {commentTarget.side === "LEFT" ? "old" : "new"}
-                        </span>
-                        <button onClick={() => setCommentTarget(undefined)}>Clear</button>
-                      </div>
-                    ) : null}
-                    <textarea
-                      aria-label="New review comment"
-                      onChange={(event) => setDraftComment(event.target.value)}
-                      placeholder="Leave a durable review thread on this file"
-                      value={draftComment}
-                    />
-                    <div>
-                      {actionError === undefined ? null : (
-                        <span className="action-error">{actionError}</span>
-                      )}
-                      <button
-                        className="primary-button"
-                        disabled={draftComment.trim() === ""}
-                        onClick={() => void createThread()}
-                      >
-                        <MessageSquare size={15} />
-                        Comment
-                      </button>
-                    </div>
-                  </section>
-                  <ThreadList
-                    onReply={replyToThread}
-                    onResolve={resolveThread}
-                    selectedPath={selectedFile.path}
-                    snapshot={snapshot}
-                  />
-                </div>
-              </>
+              snapshot.files.map((file) => (
+                <ReviewFileSection
+                  actionError={file.path === selectedPath ? actionError : undefined}
+                  canMarkReviewed={canMarkReviewed}
+                  commentTarget={commentTarget}
+                  diffOptions={diffOptions}
+                  draftComment={draftComments[file.path] ?? ""}
+                  file={file}
+                  key={file.path}
+                  onClearCommentTarget={() => setCommentTarget(undefined)}
+                  onCreateThread={createThread}
+                  onDraftCommentChange={(value) => updateDraftComment(file.path, value)}
+                  onMarkReviewed={markReviewed}
+                  onReply={replyToThread}
+                  onResolve={resolveThread}
+                  onSelectFile={setSelectedPath}
+                  selected={file.path === selectedPath}
+                  setTokenHover={setTokenHover}
+                  setCommentTarget={setCommentTarget}
+                  snapshot={snapshot}
+                />
+              ))
             )}
           </main>
         </div>
+        {tokenHover === undefined ? null : <TokenHoverCard hover={tokenHover} />}
       </div>
     </Tooltip.Provider>
   );
@@ -544,6 +550,7 @@ function ReviewFileList(props: {
   files: ReviewFile[];
   onSelect(path: string): void;
   selectedPath?: string;
+  threadStatsByPath: Map<string, FileThreadStats>;
 }) {
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLowerCase();
@@ -567,26 +574,441 @@ function ReviewFileList(props: {
         {files.length === 0 ? (
           <div className="empty-file-list">No matching files</div>
         ) : (
-          files.map((file) => (
-            <button
-              className={[
-                "file-row",
-                file.path === props.selectedPath ? "selected" : "",
-                file.markState,
-              ].join(" ")}
-              key={file.path}
-              onClick={() => props.onSelect(file.path)}
-              type="button"
-            >
-              <span className="file-row-path">{file.path}</span>
-              <span className="file-row-meta">
-                {file.status} · +{file.additions} -{file.deletions}
-              </span>
-            </button>
-          ))
+          <table className="file-table">
+            <colgroup>
+              <col className="file-column-path" />
+              <col className="file-column-comments" />
+              <col className="file-column-state" />
+              <col className="file-column-delta" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th scope="col">File</th>
+                <th scope="col">Comments</th>
+                <th scope="col">State</th>
+                <th scope="col">Delta</th>
+              </tr>
+            </thead>
+            <tbody>
+              {files.map((file) => (
+                <tr
+                  className={[
+                    "file-table-row",
+                    file.path === props.selectedPath ? "selected" : "",
+                    file.markState,
+                  ].join(" ")}
+                  key={file.path}
+                >
+                  <td className="file-name-cell">
+                    <span className={`file-status-badge ${file.status}`}>
+                      {getFileStatusCode(file.status)}
+                    </span>
+                    <button
+                      className="file-name-button"
+                      onClick={() => props.onSelect(file.path)}
+                      type="button"
+                    >
+                      {file.path}
+                    </button>
+                  </td>
+                  <td>{formatFileThreadStats(props.threadStatsByPath.get(file.path))}</td>
+                  <td>
+                    <span className={`file-state ${file.markState}`}>
+                      {formatMarkState(file.markState)}
+                    </span>
+                  </td>
+                  <td className="file-delta">
+                    <span>+{file.additions}</span>
+                    <span>-{file.deletions}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
     </>
+  );
+}
+
+function DiffToolbar({
+  fileCount,
+  onChange,
+  options,
+}: {
+  fileCount: number;
+  onChange<T extends keyof DiffViewerOptions>(key: T, value: DiffViewerOptions[T]): void;
+  options: DiffViewerOptions;
+}) {
+  return (
+    <div className="diff-toolbar">
+      <div className="diff-toolbar-title">
+        <strong>Diff viewer</strong>
+        <span>{fileCount} files</span>
+      </div>
+      <details className="diff-options-menu">
+        <summary className="review-button">
+          <SlidersHorizontal size={15} />
+          Options
+          <ChevronDown size={14} />
+        </summary>
+        <div className="diff-options-popover">
+          <fieldset>
+            <legend>Indicators</legend>
+            <SegmentedControl
+              onChange={(value) => onChange("indicators", value as DiffViewerOptions["indicators"])}
+              options={[
+                { label: "Bars", value: "bars" },
+                { label: "Classic", value: "classic" },
+                { label: "None", value: "none" },
+              ]}
+              value={options.indicators}
+            />
+          </fieldset>
+          <fieldset>
+            <legend>Layout</legend>
+            <SegmentedControl
+              onChange={(value) => onChange("diffStyle", value as DiffViewerOptions["diffStyle"])}
+              options={[
+                { label: "Unified", value: "unified" },
+                { label: "Split", value: "split" },
+              ]}
+              value={options.diffStyle}
+            />
+          </fieldset>
+          <label className="select-setting">
+            <span>Inline changes</span>
+            <select
+              onChange={(event) =>
+                onChange("lineDiffType", event.target.value as DiffViewerOptions["lineDiffType"])
+              }
+              value={options.lineDiffType}
+            >
+              <option value="word-alt">Word-Alt</option>
+              <option value="word">Word</option>
+              <option value="char">Character</option>
+              <option value="none">None</option>
+            </select>
+          </label>
+          <ToggleSetting
+            checked={options.backgrounds}
+            label="Backgrounds"
+            onChange={(checked) => onChange("backgrounds", checked)}
+          />
+          <ToggleSetting
+            checked={options.wrapping}
+            label="Wrapping"
+            onChange={(checked) => onChange("wrapping", checked)}
+          />
+          <ToggleSetting
+            checked={options.lineNumbers}
+            label="Line numbers"
+            onChange={(checked) => onChange("lineNumbers", checked)}
+          />
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function SegmentedControl({
+  onChange,
+  options,
+  value,
+}: {
+  onChange(value: string): void;
+  options: { label: string; value: string }[];
+  value: string;
+}) {
+  return (
+    <div className="segmented-control">
+      {options.map((option) => (
+        <button
+          className={option.value === value ? "active" : ""}
+          key={option.value}
+          onClick={() => onChange(option.value)}
+          type="button"
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ToggleSetting({
+  checked,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  label: string;
+  onChange(checked: boolean): void;
+}) {
+  return (
+    <label className="toggle-setting">
+      <span>{label}</span>
+      <input
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        role="switch"
+        type="checkbox"
+      />
+    </label>
+  );
+}
+
+type FileThreadStats = {
+  commentCount: number;
+  openThreadCount: number;
+};
+
+function buildFileThreadStatsByPath(
+  threads: ReviewSnapshot["threads"],
+): Map<string, FileThreadStats> {
+  const statsByPath = new Map<string, FileThreadStats>();
+
+  for (const thread of threads) {
+    const path = thread.anchor.currentPath ?? thread.anchor.originalPath;
+    const currentStats = statsByPath.get(path) ?? {
+      commentCount: 0,
+      openThreadCount: 0,
+    };
+    currentStats.commentCount += thread.comments.length;
+    if (thread.status === "open") {
+      currentStats.openThreadCount += 1;
+    }
+    statsByPath.set(path, currentStats);
+  }
+
+  return statsByPath;
+}
+
+function formatFileThreadStats(stats: FileThreadStats | undefined): string {
+  if (stats === undefined || stats.commentCount === 0) {
+    return "";
+  }
+
+  const commentLabel = `${stats.commentCount} ${stats.commentCount === 1 ? "comment" : "comments"}`;
+  if (stats.openThreadCount === 0) {
+    return commentLabel;
+  }
+
+  return `${commentLabel} (${stats.openThreadCount} unresolved)`;
+}
+
+function getFileStatusCode(status: ReviewFile["status"]): string {
+  switch (status) {
+    case "added":
+      return "A";
+    case "deleted":
+      return "D";
+    case "modified":
+      return "M";
+    case "renamed":
+      return "R";
+    case "unchanged":
+      return "U";
+  }
+}
+
+function formatMarkState(markState: ReviewFile["markState"]): string {
+  switch (markState) {
+    case "current":
+      return "Reviewed";
+    case "stale":
+      return "Stale";
+    case "unreviewed":
+      return "Open";
+  }
+}
+
+function fileSectionId(path: string): string {
+  return `file-${encodeURIComponent(path)}`;
+}
+
+function ReviewFileSection({
+  actionError,
+  canMarkReviewed,
+  commentTarget,
+  diffOptions,
+  draftComment,
+  file,
+  onClearCommentTarget,
+  onCreateThread,
+  onDraftCommentChange,
+  onMarkReviewed,
+  onReply,
+  onResolve,
+  onSelectFile,
+  selected,
+  setTokenHover,
+  setCommentTarget,
+  snapshot,
+}: {
+  actionError?: string;
+  canMarkReviewed: boolean;
+  commentTarget?: CommentTarget;
+  diffOptions: DiffViewerOptions;
+  draftComment: string;
+  file: ReviewFile;
+  onClearCommentTarget(): void;
+  onCreateThread(file: ReviewFile, anchor?: ThreadAnchorMode): Promise<void>;
+  onDraftCommentChange(value: string): void;
+  onMarkReviewed(file: ReviewFile): Promise<void>;
+  onReply(threadId: string, body: string): Promise<void>;
+  onResolve(threadId: string): Promise<void>;
+  onSelectFile(path: string): void;
+  selected: boolean;
+  setTokenHover: Dispatch<SetStateAction<TokenHover | undefined>>;
+  setCommentTarget: Dispatch<SetStateAction<CommentTarget | undefined>>;
+  snapshot: ReviewSnapshot;
+}) {
+  const lineAnnotations = buildDiffLineAnnotations(file, snapshot.threads, commentTarget);
+
+  return (
+    <section
+      className={`file-diff-section ${selected ? "selected" : ""}`}
+      id={fileSectionId(file.path)}
+    >
+      <div className="file-header">
+        <div className="file-header-main">
+          <span className={`file-status-badge ${file.status}`}>
+            {getFileStatusCode(file.status)}
+          </span>
+          <div className="file-header-title">
+            <strong>{file.path}</strong>
+          </div>
+        </div>
+        <div className="file-header-actions">
+          <details className="file-comment-menu">
+            <summary className="file-comment-button" onClick={() => onSelectFile(file.path)}>
+              <MessageSquare size={15} />
+              Comment
+            </summary>
+            <div className="file-comment-popover">
+              <textarea
+                aria-label={`New file review comment on ${file.path}`}
+                onChange={(event) => onDraftCommentChange(event.target.value)}
+                onFocus={() => {
+                  onSelectFile(file.path);
+                  onClearCommentTarget();
+                }}
+                placeholder="Leave a file-level review thread"
+                value={draftComment}
+              />
+              <div className="file-comment-submit">
+                {actionError === undefined ? null : (
+                  <span className="action-error">{actionError}</span>
+                )}
+                <button
+                  className="primary-button"
+                  disabled={draftComment.trim() === ""}
+                  onClick={() => void onCreateThread(file, "file")}
+                  type="button"
+                >
+                  <MessageSquare size={15} />
+                  Comment
+                </button>
+              </div>
+            </div>
+          </details>
+          <span className="file-header-delta">
+            <b>-{file.deletions}</b>
+            <b>+{file.additions}</b>
+          </span>
+          {canMarkReviewed ? (
+            <button
+              className={`viewed-button ${file.markState === "current" ? "viewed" : ""}`}
+              onClick={() => void onMarkReviewed(file)}
+              title="Mark this file as reviewed"
+              type="button"
+            >
+              <span />
+              Viewed
+            </button>
+          ) : null}
+        </div>
+      </div>
+      <div className="diff-scroll">
+        {file.patch === undefined ? (
+          <pre className="no-patch">Patch content has not been indexed yet.</pre>
+        ) : (
+          <PatchDiff
+            disableWorkerPool
+            options={{
+              diffIndicators: diffOptions.indicators,
+              diffStyle: diffOptions.diffStyle,
+              disableBackground: !diffOptions.backgrounds,
+              disableFileHeader: true,
+              disableLineNumbers: !diffOptions.lineNumbers,
+              enableGutterUtility: true,
+              hunkSeparators: "line-info-basic",
+              lineHoverHighlight: "both",
+              lineDiffType: diffOptions.lineDiffType,
+              onTokenEnter: (token, event) =>
+                setTokenHover({
+                  end: token.lineCharEnd,
+                  lineNumber: token.lineNumber,
+                  side: token.side,
+                  start: token.lineCharStart,
+                  text: token.tokenText,
+                  x: event.clientX,
+                  y: event.clientY,
+                }),
+              onTokenLeave: () => setTokenHover(undefined),
+              overflow: diffOptions.wrapping ? "wrap" : "scroll",
+              theme: {
+                dark: "pierre-dark",
+                light: "pierre-light",
+              },
+              useTokenTransformer: true,
+            }}
+            patch={file.patch}
+            lineAnnotations={lineAnnotations}
+            renderAnnotation={(annotation) => (
+              <DiffLineAnnotationPanel
+                actionError={actionError}
+                annotation={annotation}
+                draftComment={draftComment}
+                file={file}
+                onClearCommentTarget={onClearCommentTarget}
+                onCreateThread={onCreateThread}
+                onDraftCommentChange={onDraftCommentChange}
+                onReply={onReply}
+                onResolve={onResolve}
+              />
+            )}
+            renderGutterUtility={(getHoveredLine) => (
+              <button
+                aria-label="Comment on line"
+                className="gutter-comment"
+                onClick={() => {
+                  const hoveredLine = getHoveredLine();
+                  if (hoveredLine !== undefined) {
+                    onSelectFile(file.path);
+                    setCommentTargetFromRange(
+                      file,
+                      {
+                        end: hoveredLine.lineNumber,
+                        endSide: hoveredLine.side,
+                        side: hoveredLine.side,
+                        start: hoveredLine.lineNumber,
+                      },
+                      setCommentTarget,
+                    );
+                  }
+                }}
+                type="button"
+              >
+                <MessageSquare size={12} />
+              </button>
+            )}
+            selectedLines={getSelectedLineRange(file, commentTarget)}
+          />
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -681,89 +1103,166 @@ function PatchsetRail({
   );
 }
 
-function ThreadList({
+function DiffLineAnnotationPanel({
+  actionError,
+  annotation,
+  draftComment,
+  file,
+  onClearCommentTarget,
+  onCreateThread,
+  onDraftCommentChange,
   onReply,
   onResolve,
-  selectedPath,
-  snapshot,
+}: {
+  actionError?: string;
+  annotation: DiffLineAnnotation<ReviewLineAnnotation>;
+  draftComment: string;
+  file: ReviewFile;
+  onClearCommentTarget(): void;
+  onCreateThread(file: ReviewFile, anchor?: ThreadAnchorMode): Promise<void>;
+  onDraftCommentChange(value: string): void;
+  onReply(threadId: string, body: string): Promise<void>;
+  onResolve(threadId: string): Promise<void>;
+}) {
+  if (annotation.metadata.kind === "draft") {
+    return (
+      <section className="inline-composer">
+        <div className="comment-target">
+          <span>
+            Line {annotation.lineNumber} · {annotation.side === "deletions" ? "old" : "new"}
+          </span>
+          <button onClick={onClearCommentTarget}>Clear</button>
+        </div>
+        <textarea
+          aria-label={`New review comment on ${file.path} line ${annotation.lineNumber}`}
+          onChange={(event) => onDraftCommentChange(event.target.value)}
+          placeholder="Leave a review comment"
+          value={draftComment}
+        />
+        <div>
+          {actionError === undefined ? null : <span className="action-error">{actionError}</span>}
+          <button
+            className="primary-button"
+            disabled={draftComment.trim() === ""}
+            onClick={() => void onCreateThread(file)}
+          >
+            <MessageSquare size={15} />
+            Comment
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  return <ThreadCard onReply={onReply} onResolve={onResolve} thread={annotation.metadata.thread} />;
+}
+
+function ThreadCard({
+  onReply,
+  onResolve,
+  thread,
 }: {
   onReply(threadId: string, body: string): Promise<void>;
   onResolve(threadId: string): Promise<void>;
-  selectedPath: string;
-  snapshot: ReviewSnapshot;
+  thread: ReviewThread;
 }) {
-  const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
-  const threads = snapshot.threads.filter(
-    (thread) =>
-      thread.anchor.currentPath === selectedPath || thread.anchor.originalPath === selectedPath,
-  );
-  if (threads.length === 0) {
-    return null;
-  }
+  const [replyDraft, setReplyDraft] = useState("");
 
   return (
-    <section className="threads">
-      {threads.map((thread) => (
-        <article className="thread" key={thread.id}>
-          <div className="thread-anchor">
-            {thread.anchor.status !== "current" ? (
-              <CircleAlert size={14} />
-            ) : (
-              <MessageSquare size={14} />
-            )}
-            <span>
-              PS {thread.anchor.originalPatchsetNumber} line {thread.anchor.originalLine}
-            </span>
-            {thread.anchor.status !== "current" ? <b>{thread.anchor.status}</b> : null}
-            {thread.status === "resolved" ? <b>resolved</b> : null}
+    <article className="thread">
+      <div className="thread-anchor">
+        {thread.anchor.status !== "current" ? (
+          <CircleAlert size={14} />
+        ) : (
+          <MessageSquare size={14} />
+        )}
+        <span>
+          PS {thread.anchor.originalPatchsetNumber} line {thread.anchor.originalLine}
+        </span>
+        {thread.anchor.status !== "current" ? <b>{thread.anchor.status}</b> : null}
+        {thread.status === "resolved" ? <b>resolved</b> : null}
+      </div>
+      {thread.comments.map((comment) => (
+        <div className="comment" key={comment.id}>
+          <Avatar avatarUrl={comment.author.avatarUrl} login={comment.author.login} />
+          <div>
+            <div className="comment-head">
+              <strong>{comment.author.login}</strong>
+              <span>{formatRelative(comment.createdAt)}</span>
+              {comment.githubUrl === undefined ? (
+                comment.mirroredToGithub ? (
+                  <Github size={13} />
+                ) : null
+              ) : (
+                <a aria-label="Open comment in GitHub" href={comment.githubUrl}>
+                  <Github size={13} />
+                </a>
+              )}
+              {comment.newSinceLastVisit ? <b>new</b> : null}
+            </div>
+            <p>{comment.body}</p>
           </div>
-          {thread.comments.map((comment) => (
-            <div className="comment" key={comment.id}>
-              <Avatar login={comment.author.login} />
-              <div>
-                <div className="comment-head">
-                  <strong>{comment.author.login}</strong>
-                  <span>{formatRelative(comment.createdAt)}</span>
-                  {comment.mirroredToGithub ? <Github size={13} /> : null}
-                  {comment.newSinceLastVisit ? <b>new</b> : null}
-                </div>
-                <p>{comment.body}</p>
-              </div>
-            </div>
-          ))}
-          {thread.status === "open" ? (
-            <div className="thread-actions">
-              <input
-                aria-label="Reply"
-                onChange={(event) =>
-                  setReplyDrafts((current) => ({
-                    ...current,
-                    [thread.id]: event.target.value,
-                  }))
-                }
-                placeholder="Reply"
-                value={replyDrafts[thread.id] ?? ""}
-              />
-              <button
-                onClick={() => {
-                  const body = replyDrafts[thread.id] ?? "";
-                  void onReply(thread.id, body).then(() =>
-                    setReplyDrafts((current) => ({ ...current, [thread.id]: "" })),
-                  );
-                }}
-              >
-                <Send size={14} />
-              </button>
-              <button onClick={() => void onResolve(thread.id)}>
-                <Check size={14} />
-                Resolve
-              </button>
-            </div>
-          ) : null}
-        </article>
+        </div>
       ))}
-    </section>
+      {thread.status === "open" ? (
+        <div className="thread-actions">
+          <input
+            aria-label="Reply"
+            onChange={(event) => setReplyDraft(event.target.value)}
+            placeholder="Reply"
+            value={replyDraft}
+          />
+          <button
+            onClick={() =>
+              void onReply(thread.id, replyDraft).then(() => {
+                setReplyDraft("");
+              })
+            }
+          >
+            <Send size={14} />
+          </button>
+          <button onClick={() => void onResolve(thread.id)}>
+            <Check size={14} />
+            Resolve
+          </button>
+        </div>
+      ) : null}
+    </article>
   );
+}
+
+function buildDiffLineAnnotations(
+  file: ReviewFile,
+  threads: ReviewThread[],
+  commentTarget: CommentTarget | undefined,
+): DiffLineAnnotation<ReviewLineAnnotation>[] {
+  const annotations = threads
+    .filter(
+      (thread) =>
+        thread.anchor.currentPath === file.path || thread.anchor.originalPath === file.path,
+    )
+    .map(
+      (thread): DiffLineAnnotation<ReviewLineAnnotation> => ({
+        lineNumber: thread.anchor.currentLine ?? thread.anchor.originalLine,
+        metadata: {
+          kind: "thread",
+          thread,
+        },
+        side: thread.anchor.side === "LEFT" ? "deletions" : "additions",
+      }),
+    );
+
+  if (commentTarget?.path === file.path) {
+    annotations.push({
+      lineNumber: commentTarget.line,
+      metadata: {
+        kind: "draft",
+      },
+      side: commentTarget.side === "LEFT" ? "deletions" : "additions",
+    });
+  }
+
+  return annotations;
 }
 
 type CommentTarget = {
@@ -771,6 +1270,36 @@ type CommentTarget = {
   path: string;
   side: "LEFT" | "RIGHT";
   sourceText: string;
+};
+
+type ThreadAnchorMode = "file" | "selected-line";
+
+type DiffViewerOptions = {
+  backgrounds: boolean;
+  diffStyle: "unified" | "split";
+  indicators: DiffIndicators;
+  lineDiffType: LineDiffTypes;
+  lineNumbers: boolean;
+  wrapping: boolean;
+};
+
+type ReviewLineAnnotation =
+  | {
+      kind: "draft";
+    }
+  | {
+      kind: "thread";
+      thread: ReviewThread;
+    };
+
+type TokenHover = {
+  end: number;
+  lineNumber: number;
+  side: "additions" | "deletions";
+  start: number;
+  text: string;
+  x: number;
+  y: number;
 };
 
 function setCommentTargetFromRange(
@@ -864,30 +1393,51 @@ function StatusPill({ label, tone }: { label: string; tone: "cool" | "hot" | "mu
   return <span className={`status-pill ${tone}`}>{label}</span>;
 }
 
-function IconLink({
-  children,
-  href,
-  label,
-}: {
-  children: React.ReactNode;
-  href: string;
-  label: string;
-}) {
+function TokenHoverCard({ hover }: { hover: TokenHover }) {
   return (
-    <Tooltip.Root>
-      <Tooltip.Trigger className="icon-button" render={<a href={href} />}>
-        {children}
-      </Tooltip.Trigger>
-      <Tooltip.Portal>
-        <Tooltip.Positioner sideOffset={6}>
-          <Tooltip.Popup className="tooltip">{label}</Tooltip.Popup>
-        </Tooltip.Positioner>
-      </Tooltip.Portal>
-    </Tooltip.Root>
+    <div
+      className="token-hover-card"
+      style={{
+        left: Math.min(hover.x + 14, window.innerWidth - 260),
+        top: hover.y + 14,
+      }}
+    >
+      <strong>{hover.text}</strong>
+      <span>
+        Line {hover.lineNumber}, {hover.side === "additions" ? "new" : "old"} · chars {hover.start}-
+        {hover.end}
+      </span>
+    </div>
   );
 }
 
-function Avatar({ login }: { login: string }) {
+function AccountMenu({ avatarUrl, login }: { avatarUrl?: string; login: string }) {
+  return (
+    <details className="account-menu">
+      <summary className="account-button">
+        <Avatar avatarUrl={avatarUrl} login={login} />
+        <span>{login}</span>
+        <ChevronDown size={14} />
+      </summary>
+      <div className="account-popover">
+        <div className="account-heading">
+          <span>Signed in as</span>
+          <strong>{login}</strong>
+        </div>
+        <a className="account-menu-item" href="/auth/logout">
+          <LogOut size={15} />
+          Sign out
+        </a>
+      </div>
+    </details>
+  );
+}
+
+function Avatar({ avatarUrl, login }: { avatarUrl?: string; login: string }) {
+  if (avatarUrl !== undefined && avatarUrl.trim() !== "") {
+    return <img alt="" className="avatar" src={avatarUrl} />;
+  }
+
   return <span className="avatar">{login.slice(0, 1).toUpperCase()}</span>;
 }
 
@@ -965,6 +1515,46 @@ function writeLocalPreference(key: string, value: string): void {
   }
 }
 
+function readDiffOptions(): DiffViewerOptions {
+  const rawValue = readLocalPreference("clearance.diffOptions");
+  if (rawValue === undefined) {
+    return defaultDiffOptions;
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue) as Partial<DiffViewerOptions>;
+    return {
+      backgrounds:
+        typeof parsed.backgrounds === "boolean"
+          ? parsed.backgrounds
+          : defaultDiffOptions.backgrounds,
+      diffStyle: parsed.diffStyle === "split" ? "split" : defaultDiffOptions.diffStyle,
+      indicators: isDiffIndicator(parsed.indicators)
+        ? parsed.indicators
+        : defaultDiffOptions.indicators,
+      lineDiffType: isLineDiffType(parsed.lineDiffType)
+        ? parsed.lineDiffType
+        : defaultDiffOptions.lineDiffType,
+      lineNumbers:
+        typeof parsed.lineNumbers === "boolean"
+          ? parsed.lineNumbers
+          : defaultDiffOptions.lineNumbers,
+      wrapping:
+        typeof parsed.wrapping === "boolean" ? parsed.wrapping : defaultDiffOptions.wrapping,
+    };
+  } catch {
+    return defaultDiffOptions;
+  }
+}
+
+function isDiffIndicator(value: unknown): value is DiffIndicators {
+  return value === "bars" || value === "classic" || value === "none";
+}
+
+function isLineDiffType(value: unknown): value is LineDiffTypes {
+  return value === "word-alt" || value === "word" || value === "char" || value === "none";
+}
+
 async function readActionError(response: ClientResponse): Promise<string> {
   try {
     const payload = (await response.json()) as { error?: string };
@@ -1018,5 +1608,7 @@ type MeResponse = {
     login: string;
   };
 };
+
+type ReviewEvent = "APPROVE" | "COMMENT" | "REQUEST_CHANGES";
 
 createRoot(document.querySelector("#root") as HTMLElement).render(<App />);

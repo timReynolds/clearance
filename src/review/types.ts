@@ -160,4 +160,5 @@ export type ReplyThreadRequest = {
 
 export type SubmitReviewRequest = {
   body?: string;
+  event?: "APPROVE" | "COMMENT" | "REQUEST_CHANGES";
 };

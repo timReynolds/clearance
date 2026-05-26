@@ -17,13 +17,15 @@ import { registerGithubHandlers, type GithubWorkflowOctokit } from "./github/han
 import {
   createGithubReviewThreadComment,
   findGithubPullRequestNodeId,
+  findGithubReviewThreadNodeIdForComment,
   markGithubFileViewed,
   replyToGithubReviewThread,
   resolveGithubReviewThread,
   serializeReviewThreadMarker,
-  submitGithubPullRequestApproval,
+  submitGithubPullRequestReview,
   listFileChangesBetweenCommits,
   type CommitCompareFileChange,
+  type GithubPullRequestReviewEvent,
   type GithubReviewCommentMirror,
 } from "./github/index.js";
 import { createInstallationOctokit } from "./github/installation-client.js";
@@ -493,18 +495,31 @@ async function handleReviewApiRequest(
     return;
   }
 
-  if (request.method === "POST" && route.action === "reviews/approve") {
+  if (
+    request.method === "POST" &&
+    (route.action === "reviews" || route.action === "reviews/approve")
+  ) {
     const body = await readJsonBody<SubmitReviewRequest>(request);
     if (actor.accessToken === undefined) {
-      writeJson(response, 401, { error: "sign in with GitHub to approve on GitHub" });
+      writeJson(response, 401, { error: "sign in with GitHub to submit a review on GitHub" });
       return;
     }
 
-    await submitGithubPullRequestApproval(
-      createUserOctokit(actor.accessToken),
-      route,
-      body?.body ?? "Reviewed in Clearance.",
-    );
+    const event = route.action === "reviews/approve" ? "APPROVE" : body?.event;
+    if (!isGithubReviewEvent(event)) {
+      writeJson(response, 400, { error: "expected review event" });
+      return;
+    }
+
+    if (event === "REQUEST_CHANGES" && !isNonEmptyString(body?.body)) {
+      writeJson(response, 400, { error: "requesting changes requires a review comment" });
+      return;
+    }
+
+    await submitGithubPullRequestReview(createUserOctokit(actor.accessToken), route, {
+      body: body?.body ?? (event === "APPROVE" ? "Reviewed in Clearance." : undefined),
+      event,
+    });
     await reviewStore.markNotMyTurn(route, actorLogin);
 
     writeJson(response, 202, { githubMirrored: true, ok: true });
@@ -666,6 +681,7 @@ function parseReviewRoute(pathname: string):
         | "attention/not-my-turn"
         | "attention/pass"
         | "marks"
+        | "reviews"
         | "reviews/approve"
         | "threads"
         | "threads/replies"
@@ -719,6 +735,7 @@ function normalizeReviewAction(segments: string[]): ReviewPullRequestApiRoute["a
     action === "attention/pass" ||
     action === "attention/not-my-turn" ||
     action === "threads" ||
+    action === "reviews" ||
     action === "reviews/approve"
   ) {
     return action;
@@ -863,11 +880,24 @@ async function mirrorThreadResolution(
   }
 
   const githubRef = await reviewStore.loadThreadGithubRef(ref, threadId);
-  if (githubRef?.threadNodeId === undefined) {
+  let threadNodeId = githubRef?.threadNodeId;
+  if (threadNodeId === undefined) {
+    const rootCommentId = getPublicThreadRootCommentId(threadId);
+    threadNodeId =
+      rootCommentId === undefined
+        ? undefined
+        : await findGithubReviewThreadNodeIdForComment(
+            createUserOctokit(accessToken),
+            ref,
+            rootCommentId,
+          );
+  }
+
+  if (threadNodeId === undefined) {
     return false;
   }
 
-  await resolveGithubReviewThread(createUserOctokit(accessToken), githubRef.threadNodeId);
+  await resolveGithubReviewThread(createUserOctokit(accessToken), threadNodeId);
   return true;
 }
 
@@ -1032,6 +1062,10 @@ function isReviewOAuthState(value: unknown): value is ReviewOAuthState {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function isGithubReviewEvent(value: unknown): value is GithubPullRequestReviewEvent {
+  return value === "APPROVE" || value === "COMMENT" || value === "REQUEST_CHANGES";
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
