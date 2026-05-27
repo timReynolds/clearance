@@ -1,20 +1,23 @@
 import {
+  lazy,
+  Suspense,
   useEffect,
   useRef,
   useState,
+  type ComponentType,
   type Dispatch,
   type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
   type SetStateAction,
 } from "react";
 import { createRoot } from "react-dom/client";
-import { PatchDiff } from "@pierre/diffs/react";
 import type {
   DiffIndicators,
   DiffLineAnnotation,
   LineDiffTypes,
   SelectedLineRange,
 } from "@pierre/diffs";
+import type { PatchDiffProps } from "@pierre/diffs/react";
 import {
   Check,
   ChevronDown,
@@ -35,11 +38,35 @@ import {
   Sun,
 } from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Field, FieldLabel } from "@/components/ui/field";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { Input } from "@/components/ui/input";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { ReviewFile, ReviewSnapshot, ReviewThread } from "../src/review/types";
 // oxlint-disable-next-line import/no-unassigned-import
 import "./styles.css";
+
+const PatchDiff = lazy(async () => {
+  const module = await import("@pierre/diffs/react");
+  return {
+    default: module.PatchDiff as ComponentType<PatchDiffProps<ReviewLineAnnotation>>,
+  };
+});
 
 const defaultViewerLogin = readLocalPreference("clearance.viewer") ?? "tim";
 const defaultColorMode: ColorMode = "system";
@@ -563,15 +590,16 @@ function App() {
               {actionError === undefined ? null : (
                 <span className="state-error">{actionError}</span>
               )}
-              <details className="review-menu">
-                <summary className="review-button">
+              <Popover>
+                <PopoverTrigger className="review-button" type="button">
                   <Check size={15} />
                   Review
                   <ChevronDown size={14} />
-                </summary>
-                <div className="review-popover">
-                  <textarea
+                </PopoverTrigger>
+                <PopoverContent align="end" className="review-popover" sideOffset={8}>
+                  <Textarea
                     aria-label="Review summary"
+                    className="review-textarea"
                     onChange={(event) => setReviewBody(event.target.value)}
                     placeholder="Add a review summary"
                     value={reviewBody}
@@ -608,8 +636,8 @@ function App() {
                       Request changes
                     </Button>
                   </div>
-                </div>
-              </details>
+                </PopoverContent>
+              </Popover>
             </div>
           ) : null}
         </section>
@@ -701,16 +729,18 @@ function ReviewFileList(props: {
 
   return (
     <>
-      <label className="file-filter">
-        <Search size={14} />
-        <input
+      <InputGroup className="file-filter">
+        <InputGroupAddon>
+          <Search size={14} />
+        </InputGroupAddon>
+        <InputGroupInput
           aria-label="Filter changed files"
-          ref={props.filterInputRef}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Filter changed files"
+          ref={props.filterInputRef}
           value={query}
         />
-      </label>
+      </InputGroup>
       <div className="file-list">
         {files.length === 0 ? (
           <div className="empty-file-list">No matching files</div>
@@ -741,9 +771,7 @@ function ReviewFileList(props: {
                   key={file.path}
                 >
                   <td className="file-name-cell">
-                    <span className={`file-status-badge ${file.status}`}>
-                      {getFileStatusCode(file.status)}
-                    </span>
+                    <FileStatusBadge status={file.status} />
                     <button
                       className="file-name-button"
                       onClick={() => props.onSelect(file.path)}
@@ -791,13 +819,13 @@ function DiffToolbar({
         <strong>Diff viewer</strong>
         <span>{fileCount} files</span>
       </div>
-      <details className="diff-options-menu">
-        <summary className="review-button">
+      <Popover>
+        <PopoverTrigger className="review-button" type="button">
           <SlidersHorizontal size={15} />
           Options
           <ChevronDown size={14} />
-        </summary>
-        <div className="diff-options-popover">
+        </PopoverTrigger>
+        <PopoverContent align="end" className="diff-options-popover" sideOffset={8}>
           <fieldset>
             <legend>Indicators</legend>
             <SegmentedControl
@@ -831,17 +859,17 @@ function DiffToolbar({
           </fieldset>
           <label className="select-setting">
             <span>Inline changes</span>
-            <select
+            <NativeSelect
               onChange={(event) =>
                 onChange("lineDiffType", event.target.value as DiffViewerOptions["lineDiffType"])
               }
               value={options.lineDiffType}
             >
-              <option value="word-alt">Word-Alt</option>
-              <option value="word">Word</option>
-              <option value="char">Character</option>
-              <option value="none">None</option>
-            </select>
+              <NativeSelectOption value="word-alt">Word-Alt</NativeSelectOption>
+              <NativeSelectOption value="word">Word</NativeSelectOption>
+              <NativeSelectOption value="char">Character</NativeSelectOption>
+              <NativeSelectOption value="none">None</NativeSelectOption>
+            </NativeSelect>
           </label>
           <ToggleSetting
             checked={options.backgrounds}
@@ -858,8 +886,8 @@ function DiffToolbar({
             label="Line numbers"
             onChange={(checked) => onChange("lineNumbers", checked)}
           />
-        </div>
-      </details>
+        </PopoverContent>
+      </Popover>
     </div>
   );
 }
@@ -874,18 +902,26 @@ function SegmentedControl({
   value: string;
 }) {
   return (
-    <div className="segmented-control">
+    <ToggleGroup
+      className="segmented-control"
+      onValueChange={(nextValue) => {
+        const selectedValue = nextValue.at(-1);
+        if (selectedValue !== undefined) {
+          onChange(selectedValue);
+        }
+      }}
+      value={[value]}
+    >
       {options.map((option) => (
-        <button
+        <ToggleGroupItem
           className={option.value === value ? "active" : ""}
           key={option.value}
-          onClick={() => onChange(option.value)}
-          type="button"
+          value={option.value}
         >
           {option.label}
-        </button>
+        </ToggleGroupItem>
       ))}
-    </div>
+    </ToggleGroup>
   );
 }
 
@@ -899,15 +935,10 @@ function ToggleSetting({
   onChange(checked: boolean): void;
 }) {
   return (
-    <label className="toggle-setting">
-      <span>{label}</span>
-      <input
-        checked={checked}
-        onChange={(event) => onChange(event.target.checked)}
-        role="switch"
-        type="checkbox"
-      />
-    </label>
+    <Field className="toggle-setting" orientation="horizontal">
+      <FieldLabel>{label}</FieldLabel>
+      <Switch aria-label={label} checked={checked} onCheckedChange={onChange} />
+    </Field>
   );
 }
 
@@ -939,17 +970,18 @@ function AttentionMenu({
   const isStale = members.some((member) => isOlderThanHours(member.addedAt, 24));
 
   return (
-    <details className="attention-menu">
-      <summary
+    <Popover>
+      <PopoverTrigger
         className={["attention-summary", isViewerTurn ? "active" : "", isStale ? "stale" : ""].join(
           " ",
         )}
+        type="button"
       >
         <i />
         <span>{getAttentionSummary(snapshot, showTurnState)}</span>
         <ChevronDown size={14} />
-      </summary>
-      <div className="attention-popover">
+      </PopoverTrigger>
+      <PopoverContent align="start" className="attention-popover" sideOffset={8}>
         <div className="attention-heading">
           <strong>{isViewerTurn ? "Your turn" : "Attention"}</strong>
           <span>{getAttentionDetail(snapshot, showTurnState)}</span>
@@ -972,39 +1004,45 @@ function AttentionMenu({
           )}
         </div>
         <div className="attention-actions">
-          <button
+          <Button
             disabled={actionTarget === undefined}
             onClick={() => onNavigate(actionTarget)}
             type="button"
+            variant="outline"
           >
             <CircleAlert size={14} />
             Open next item
-          </button>
-          <button
+          </Button>
+          <Button
             disabled={!canManage || !snapshot.attention.isViewerTurn}
             onClick={() => void onNotMyTurn()}
             type="button"
+            variant="outline"
           >
             <Check size={14} />
             Not my turn
-          </button>
+          </Button>
         </div>
         <div className="attention-pass">
-          <input
+          <Input
             aria-label="Pass attention to"
             disabled={!canManage}
             onChange={(event) => onPassTargetChange(event.target.value)}
             placeholder="Reviewer login"
             value={passTarget}
           />
-          <button disabled={!canManage || passTarget.trim() === ""} onClick={() => void onPass()}>
+          <Button
+            disabled={!canManage || passTarget.trim() === ""}
+            onClick={() => void onPass()}
+            type="button"
+          >
             <Send size={14} />
             Pass
-          </button>
+          </Button>
         </div>
         {error === undefined ? null : <span className="action-error">{error}</span>}
-      </div>
-    </details>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -1017,29 +1055,32 @@ function ReviewOverview({
 }) {
   return (
     <section className="review-overview">
-      <details className={`readiness-panel ${model.readiness.tone}`}>
-        <summary className="readiness-summary">
-          <span className="readiness-dot" />
-          <strong>{model.readiness.label}</strong>
-          <span>{model.readiness.detail}</span>
-          <ChevronDown size={14} />
-        </summary>
-        <div className="readiness-details">
+      <Popover>
+        <div className={`readiness-panel ${model.readiness.tone}`}>
+          <PopoverTrigger className="readiness-summary" type="button">
+            <span className="readiness-dot" />
+            <strong>{model.readiness.label}</strong>
+            <span>{model.readiness.detail}</span>
+            <ChevronDown size={14} />
+          </PopoverTrigger>
+        </div>
+        <PopoverContent align="start" className="readiness-details" sideOffset={8}>
           <div>
             <h2>Needs Attention</h2>
             {model.readiness.blockers.length === 0 ? (
               <p>No blocking review items are currently known.</p>
             ) : (
               model.readiness.blockers.map((item) => (
-                <button
+                <Button
                   disabled={item.target === undefined}
                   key={item.id}
                   onClick={() => onNavigate(item.target)}
                   type="button"
+                  variant="outline"
                 >
                   <strong>{item.label}</strong>
                   <span>{item.detail}</span>
-                </button>
+                </Button>
               ))
             )}
           </div>
@@ -1056,27 +1097,27 @@ function ReviewOverview({
               ))
             )}
           </div>
-        </div>
-      </details>
+        </PopoverContent>
+      </Popover>
       <div className="check-chip-row">
         {model.chips.map((chip) =>
           chip.target === undefined ? (
-            <span className={`check-chip ${chip.tone}`} key={chip.id}>
+            <Badge className={`check-chip ${chip.tone}`} key={chip.id} variant="outline">
               <i />
               <strong>{chip.label}</strong>
               <span>{chip.value}</span>
-            </span>
+            </Badge>
           ) : (
-            <button
+            <Badge
               className={`check-chip ${chip.tone}`}
               key={chip.id}
-              onClick={() => onNavigate(chip.target)}
-              type="button"
+              render={<button onClick={() => onNavigate(chip.target)} type="button" />}
+              variant="outline"
             >
               <i />
               <strong>{chip.label}</strong>
               <span>{chip.value}</span>
-            </button>
+            </Badge>
           ),
         )}
       </div>
@@ -1658,22 +1699,25 @@ function ReviewFileSection({
     >
       <div className="file-header">
         <div className="file-header-main">
-          <span className={`file-status-badge ${file.status}`}>
-            {getFileStatusCode(file.status)}
-          </span>
+          <FileStatusBadge status={file.status} />
           <div className="file-header-title">
             <strong>{file.path}</strong>
           </div>
         </div>
         <div className="file-header-actions">
-          <details className="file-comment-menu">
-            <summary className="file-comment-button" onClick={() => onSelectFile(file.path)}>
+          <Popover>
+            <PopoverTrigger
+              className="file-comment-button"
+              onClick={() => onSelectFile(file.path)}
+              type="button"
+            >
               <MessageSquare size={15} />
               Comment
-            </summary>
-            <div className="file-comment-popover">
-              <textarea
+            </PopoverTrigger>
+            <PopoverContent align="end" className="file-comment-popover" sideOffset={8}>
+              <Textarea
                 aria-label={`New file review comment on ${file.path}`}
+                className="file-comment-textarea"
                 onChange={(event) => onDraftCommentChange(event.target.value)}
                 onFocus={() => {
                   onSelectFile(file.path);
@@ -1702,22 +1746,24 @@ function ReviewFileSection({
                   Comment
                 </Button>
               </div>
-            </div>
-          </details>
+            </PopoverContent>
+          </Popover>
           <span className="file-header-delta">
             <b>-{file.deletions}</b>
             <b>+{file.additions}</b>
           </span>
           {canMarkReviewed ? (
-            <button
+            <Button
               className={`viewed-button ${file.markState === "current" ? "viewed" : ""}`}
               onClick={() => void onMarkReviewed(file)}
+              size="sm"
               title={getViewedShortcutTitle(keyBindingStyle)}
               type="button"
+              variant="outline"
             >
               <span />
               Viewed
-            </button>
+            </Button>
           ) : null}
         </div>
       </div>
@@ -1725,81 +1771,83 @@ function ReviewFileSection({
         {file.patch === undefined ? (
           <pre className="no-patch">Patch content has not been indexed yet.</pre>
         ) : (
-          <PatchDiff
-            disableWorkerPool
-            options={{
-              diffIndicators: diffOptions.indicators,
-              diffStyle: diffOptions.diffStyle,
-              disableBackground: !diffOptions.backgrounds,
-              disableFileHeader: true,
-              disableLineNumbers: !diffOptions.lineNumbers,
-              enableGutterUtility: true,
-              hunkSeparators: "line-info-basic",
-              lineHoverHighlight: "both",
-              lineDiffType: diffOptions.lineDiffType,
-              onTokenEnter: (token, event) =>
-                setTokenHover({
-                  end: token.lineCharEnd,
-                  lineNumber: token.lineNumber,
-                  side: token.side,
-                  start: token.lineCharStart,
-                  text: token.tokenText,
-                  x: event.clientX,
-                  y: event.clientY,
-                }),
-              onTokenLeave: () => setTokenHover(undefined),
-              overflow: diffOptions.wrapping ? "wrap" : "scroll",
-              theme: {
-                dark: "pierre-dark",
-                light: "pierre-light",
-              },
-              themeType: colorMode,
-              useTokenTransformer: true,
-            }}
-            patch={file.patch}
-            lineAnnotations={lineAnnotations}
-            renderAnnotation={(annotation) => (
-              <DiffLineAnnotationPanel
-                actionError={actionError}
-                annotation={annotation}
-                draftComment={draftComment}
-                file={file}
-                onClearCommentTarget={onClearCommentTarget}
-                onCreateThread={onCreateThread}
-                onDraftCommentChange={onDraftCommentChange}
-                onReply={onReply}
-                onResolve={onResolve}
-                onSelectThread={onSelectThread}
-                selectedThreadId={selectedThreadId}
-              />
-            )}
-            renderGutterUtility={(getHoveredLine) => (
-              <button
-                aria-label="Comment on line"
-                className="gutter-comment"
-                onClick={() => {
-                  const hoveredLine = getHoveredLine();
-                  if (hoveredLine !== undefined) {
-                    onSelectFile(file.path);
-                    setCommentTargetFromRange(
-                      file,
-                      {
-                        end: hoveredLine.lineNumber,
-                        endSide: hoveredLine.side,
-                        side: hoveredLine.side,
-                        start: hoveredLine.lineNumber,
-                      },
-                      setCommentTarget,
-                    );
-                  }
-                }}
-                type="button"
-              >
-                <MessageSquare size={12} />
-              </button>
-            )}
-            selectedLines={getSelectedLineRange(file, commentTarget)}
-          />
+          <Suspense fallback={<pre className="no-patch">Loading diff...</pre>}>
+            <PatchDiff
+              disableWorkerPool
+              options={{
+                diffIndicators: diffOptions.indicators,
+                diffStyle: diffOptions.diffStyle,
+                disableBackground: !diffOptions.backgrounds,
+                disableFileHeader: true,
+                disableLineNumbers: !diffOptions.lineNumbers,
+                enableGutterUtility: true,
+                hunkSeparators: "line-info-basic",
+                lineHoverHighlight: "both",
+                lineDiffType: diffOptions.lineDiffType,
+                onTokenEnter: (token, event) =>
+                  setTokenHover({
+                    end: token.lineCharEnd,
+                    lineNumber: token.lineNumber,
+                    side: token.side,
+                    start: token.lineCharStart,
+                    text: token.tokenText,
+                    x: event.clientX,
+                    y: event.clientY,
+                  }),
+                onTokenLeave: () => setTokenHover(undefined),
+                overflow: diffOptions.wrapping ? "wrap" : "scroll",
+                theme: {
+                  dark: "pierre-dark",
+                  light: "pierre-light",
+                },
+                themeType: colorMode,
+                useTokenTransformer: true,
+              }}
+              patch={file.patch}
+              lineAnnotations={lineAnnotations}
+              renderAnnotation={(annotation) => (
+                <DiffLineAnnotationPanel
+                  actionError={actionError}
+                  annotation={annotation}
+                  draftComment={draftComment}
+                  file={file}
+                  onClearCommentTarget={onClearCommentTarget}
+                  onCreateThread={onCreateThread}
+                  onDraftCommentChange={onDraftCommentChange}
+                  onReply={onReply}
+                  onResolve={onResolve}
+                  onSelectThread={onSelectThread}
+                  selectedThreadId={selectedThreadId}
+                />
+              )}
+              renderGutterUtility={(getHoveredLine) => (
+                <button
+                  aria-label="Comment on line"
+                  className="gutter-comment"
+                  onClick={() => {
+                    const hoveredLine = getHoveredLine();
+                    if (hoveredLine !== undefined) {
+                      onSelectFile(file.path);
+                      setCommentTargetFromRange(
+                        file,
+                        {
+                          end: hoveredLine.lineNumber,
+                          endSide: hoveredLine.side,
+                          side: hoveredLine.side,
+                          start: hoveredLine.lineNumber,
+                        },
+                        setCommentTarget,
+                      );
+                    }
+                  }}
+                  type="button"
+                >
+                  <MessageSquare size={12} />
+                </button>
+              )}
+              selectedLines={getSelectedLineRange(file, commentTarget)}
+            />
+          </Suspense>
         )}
       </div>
     </section>
@@ -1820,8 +1868,9 @@ function PatchsetRail({
         <span>Patchsets</span>
         <label>
           From
-          <select
+          <NativeSelect
             aria-label="Comparison from patchset"
+            size="sm"
             onChange={(event) =>
               onSelectComparison(
                 Number.parseInt(event.target.value, 10),
@@ -1831,16 +1880,17 @@ function PatchsetRail({
             value={snapshot.comparison.fromPatchsetNumber}
           >
             {snapshot.patchsets.map((patchset) => (
-              <option key={patchset.patchsetNumber} value={patchset.patchsetNumber}>
+              <NativeSelectOption key={patchset.patchsetNumber} value={patchset.patchsetNumber}>
                 PS {patchset.patchsetNumber}
-              </option>
+              </NativeSelectOption>
             ))}
-          </select>
+          </NativeSelect>
         </label>
         <label>
           To
-          <select
+          <NativeSelect
             aria-label="Comparison to patchset"
+            size="sm"
             onChange={(event) =>
               onSelectComparison(
                 snapshot.comparison.fromPatchsetNumber,
@@ -1850,11 +1900,11 @@ function PatchsetRail({
             value={snapshot.comparison.toPatchsetNumber}
           >
             {snapshot.patchsets.map((patchset) => (
-              <option key={patchset.patchsetNumber} value={patchset.patchsetNumber}>
+              <NativeSelectOption key={patchset.patchsetNumber} value={patchset.patchsetNumber}>
                 PS {patchset.patchsetNumber}
-              </option>
+              </NativeSelectOption>
             ))}
-          </select>
+          </NativeSelect>
         </label>
       </div>
       <div className="rail-track">
@@ -1926,10 +1976,13 @@ function DiffLineAnnotationPanel({
           <span>
             Line {annotation.lineNumber} · {annotation.side === "deletions" ? "old" : "new"}
           </span>
-          <button onClick={onClearCommentTarget}>Clear</button>
+          <Button onClick={onClearCommentTarget} size="xs" type="button" variant="ghost">
+            Clear
+          </Button>
         </div>
-        <textarea
+        <Textarea
           aria-label={`New review comment on ${file.path} line ${annotation.lineNumber}`}
+          className="inline-comment-textarea"
           onChange={(event) => onDraftCommentChange(event.target.value)}
           onKeyDown={(event) => {
             if (isSubmitShortcut(event) && draftComment.trim() !== "") {
@@ -2024,7 +2077,7 @@ function ThreadCard({
       ))}
       {thread.status === "open" ? (
         <div className="thread-actions">
-          <input
+          <Input
             aria-label="Reply"
             onChange={(event) => setReplyDraft(event.target.value)}
             onKeyDown={(event) => {
@@ -2417,7 +2470,19 @@ function plural(count: number, singular: string, pluralForm = `${singular}s`): s
 }
 
 function StatusPill({ label, tone }: { label: string; tone: "cool" | "hot" | "muted" }) {
-  return <span className={`status-pill ${tone}`}>{label}</span>;
+  return (
+    <Badge className={`status-pill ${tone}`} variant="outline">
+      {label}
+    </Badge>
+  );
+}
+
+function FileStatusBadge({ status }: { status: ReviewFile["status"] }) {
+  return (
+    <Badge className={`file-status-badge ${status}`} variant="outline">
+      {getFileStatusCode(status)}
+    </Badge>
+  );
 }
 
 function TokenHoverCard({ hover }: { hover: TokenHover }) {
@@ -2440,23 +2505,24 @@ function TokenHoverCard({ hover }: { hover: TokenHover }) {
 
 function AccountMenu({ avatarUrl, login }: { avatarUrl?: string; login: string }) {
   return (
-    <details className="account-menu">
-      <summary className="account-button">
+    <DropdownMenu>
+      <DropdownMenuTrigger className="account-button" type="button">
         <Avatar avatarUrl={avatarUrl} login={login} />
         <span>{login}</span>
         <ChevronDown size={14} />
-      </summary>
-      <div className="account-popover">
-        <div className="account-heading">
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="account-popover" sideOffset={8}>
+        <DropdownMenuLabel className="account-heading">
           <span>Signed in as</span>
           <strong>{login}</strong>
-        </div>
-        <a className="account-menu-item" href="/auth/logout">
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem className="account-menu-item" render={<a href="/auth/logout" />}>
           <LogOut size={15} />
           Sign out
-        </a>
-      </div>
-    </details>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

@@ -6,7 +6,7 @@ test("renders the review page with mocked API data", async ({ page }) => {
   await mockReviewApi(page);
   await page.goto("/review/acme/repo/pull/1");
 
-  await expect(page.getByText("Use shadcn with Base UI")).toBeVisible();
+  await expect(page.locator(".pr-title").getByText("Use shadcn with Base UI")).toBeVisible();
   await expect(page.getByRole("button", { name: "web/main.tsx" })).toBeVisible();
   await expect(page.getByText("PS 1 to PS 2")).toBeVisible();
   await expect(page.getByText("Unexpected token")).toHaveCount(0);
@@ -16,7 +16,7 @@ test("submits a review through shadcn button actions", async ({ page }) => {
   const actions = await mockReviewApi(page);
   await page.goto("/review/acme/repo/pull/1");
 
-  await page.locator("summary.review-button", { hasText: "Review" }).click();
+  await page.getByRole("button", { exact: true, name: "Review" }).click();
   await page.getByRole("button", { name: "Approve" }).click();
 
   await expect.poll(() => actions.length).toBe(1);
@@ -132,7 +132,7 @@ test("persists diff option changes", async ({ page }) => {
   await mockReviewApi(page);
   await page.goto("/review/acme/repo/pull/1");
 
-  await page.locator("summary.review-button", { hasText: "Options" }).click();
+  await page.getByRole("button", { name: "Options" }).click();
   await page.locator(".diff-options-popover").getByRole("button", { name: "Split" }).click();
   await page.getByRole("switch", { name: "Wrapping" }).click();
 
@@ -150,7 +150,7 @@ test("persists the key binding style menu option", async ({ page }) => {
   await mockReviewApi(page);
   await page.goto("/review/acme/repo/pull/1");
 
-  await page.locator("summary.review-button", { hasText: "Options" }).click();
+  await page.getByRole("button", { name: "Options" }).click();
   await page.locator(".diff-options-popover").getByRole("button", { name: "GitHub" }).click();
 
   await expect
@@ -158,11 +158,11 @@ test("persists the key binding style menu option", async ({ page }) => {
     .toBe("github");
 
   await page.reload();
-  await page.locator("summary.review-button", { hasText: "Options" }).click();
+  await page.getByRole("button", { name: "Options" }).click();
 
   await expect(
     page.locator(".diff-options-popover").getByRole("button", { name: "GitHub" }),
-  ).toHaveClass(/active/);
+  ).toHaveAttribute("aria-pressed", "true");
 });
 
 test("uses VS Code key bindings by default", async ({ page }) => {
@@ -186,7 +186,7 @@ test("uses GitHub key bindings when selected", async ({ page }) => {
   const actions = await mockReviewApi(page);
   await page.goto("/review/acme/repo/pull/1");
 
-  await page.locator("summary.review-button", { hasText: "Options" }).click();
+  await page.getByRole("button", { name: "Options" }).click();
   await page.locator(".diff-options-popover").getByRole("button", { name: "GitHub" }).click();
 
   await page.keyboard.press("]");
@@ -233,7 +233,7 @@ test("passes reviewer attention", async ({ page }) => {
   const actions = await mockReviewApi(page);
   await page.goto("/review/acme/repo/pull/1");
 
-  await page.locator("summary.attention-summary").click();
+  await page.getByRole("button", { name: "Your turn" }).click();
   await page.getByLabel("Pass attention to").fill("sarah");
   await page.locator(".attention-popover").getByRole("button", { name: "Pass" }).click();
 
@@ -269,14 +269,11 @@ test("creates a file-level review thread", async ({ page }) => {
   await page.goto("/review/acme/repo/pull/1");
 
   const fileSection = page.locator("section.file-diff-section", { hasText: "web/main.tsx" });
-  await fileSection.locator("summary.file-comment-button").click();
-  await fileSection
+  await fileSection.locator(".file-comment-button").click();
+  await page
     .getByLabel("New file review comment on web/main.tsx")
     .fill("Please double-check this UI state.");
-  await fileSection
-    .locator(".file-comment-submit")
-    .getByRole("button", { name: "Comment" })
-    .click();
+  await page.locator(".file-comment-submit").getByRole("button", { name: "Comment" }).click();
 
   await expect
     .poll(() => actions.some((action) => action.pathname.endsWith("/threads")))

@@ -466,10 +466,6 @@ a {
   min-height: 32px;
 }
 
-.account-menu {
-  position: relative;
-}
-
 .account-button {
   background: var(--surface-raised);
   border: 1px solid var(--border);
@@ -484,11 +480,7 @@ a {
     box-shadow 140ms ease;
 }
 
-.account-button::-webkit-details-marker {
-  display: none;
-}
-
-.account-menu[open] .account-button {
+.account-button[data-popup-open] {
   border-color: var(--accent-border);
   box-shadow: var(--focus-ring);
 }
@@ -505,10 +497,6 @@ a {
   box-shadow: var(--shadow-soft);
   min-width: 210px;
   padding: 8px;
-  position: absolute;
-  right: 0;
-  top: calc(100% + 8px);
-  z-index: 40;
 }
 
 .account-heading {
@@ -724,10 +712,6 @@ button:disabled {
   background: var(--success);
 }
 
-.attention-menu {
-  position: relative;
-}
-
 .attention-summary {
   align-items: center;
   background: var(--surface);
@@ -743,10 +727,6 @@ button:disabled {
   max-width: 280px;
   padding: 0 8px;
   white-space: nowrap;
-}
-
-.attention-summary::-webkit-details-marker {
-  display: none;
 }
 
 .attention-summary i {
@@ -776,7 +756,7 @@ button:disabled {
   background: var(--attention);
 }
 
-.attention-menu[open] .attention-summary {
+.attention-summary[data-popup-open] {
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
@@ -787,12 +767,8 @@ button:disabled {
   box-shadow: var(--shadow-soft);
   display: grid;
   gap: 10px;
-  left: 0;
   min-width: 360px;
   padding: 10px;
-  position: absolute;
-  top: calc(100% + 8px);
-  z-index: 60;
 }
 
 .attention-heading,
@@ -947,7 +923,7 @@ button:disabled {
   background: var(--info);
 }
 
-.readiness-panel[open] .readiness-summary {
+.readiness-summary[data-popup-open] {
   border-color: var(--accent-border);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
@@ -960,12 +936,8 @@ button:disabled {
   display: grid;
   gap: 12px;
   grid-template-columns: 1fr 1fr;
-  left: 0;
   padding: 12px;
-  position: absolute;
-  top: calc(100% + 8px);
   width: min(720px, calc(100vw - 32px));
-  z-index: 55;
 }
 
 .readiness-details h2 {
@@ -1095,13 +1067,6 @@ button.check-chip:hover {
   background: var(--muted-soft);
 }
 
-.review-menu,
-.pass-menu,
-.diff-options-menu,
-.file-comment-menu {
-  position: relative;
-}
-
 .review-button {
   background: var(--control-bg);
   border: 1px solid var(--border);
@@ -1116,14 +1081,8 @@ button.check-chip:hover {
     box-shadow 140ms ease;
 }
 
-.review-button::-webkit-details-marker {
-  display: none;
-}
-
-.review-menu[open] .review-button,
-.pass-menu[open] .review-button,
-.diff-options-menu[open] .review-button,
-.file-comment-menu[open] .file-comment-button {
+.review-button[data-popup-open],
+.file-comment-button[data-popup-open] {
   border-color: var(--accent-border);
 }
 
@@ -1137,10 +1096,6 @@ button.check-chip:hover {
   display: grid;
   gap: var(--space-2);
   padding: var(--space-3);
-  position: absolute;
-  right: 0;
-  top: calc(100% + 8px);
-  z-index: 40;
 }
 
 .review-popover {
@@ -1226,10 +1181,7 @@ button.check-chip:hover {
 
 .diff-options-popover {
   gap: var(--space-3);
-  left: auto;
   min-width: 340px;
-  right: 0;
-  top: calc(100% + 8px);
 }
 
 .diff-options-popover fieldset {
@@ -1292,37 +1244,14 @@ button.check-chip:hover {
   padding: 0 8px;
 }
 
-.toggle-setting input {
-  appearance: none;
-  background: var(--surface-raised);
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
+.toggle-setting [data-slot="field-label"] {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.toggle-setting [data-slot="switch"] {
   cursor: pointer;
-  height: 24px;
-  position: relative;
-  width: 42px;
-}
-
-.toggle-setting input::before {
-  background: var(--text-muted);
-  border-radius: 50%;
-  content: "";
-  height: 18px;
-  left: 2px;
-  position: absolute;
-  top: 2px;
-  transition: transform 120ms ease;
-  width: 18px;
-}
-
-.toggle-setting input:checked {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.toggle-setting input:checked::before {
-  background: var(--primary-text);
-  transform: translateX(18px);
 }
 
 .review-grid {
@@ -1343,7 +1272,9 @@ button.check-chip:hover {
 
 .file-filter {
   background: var(--translucent-surface);
+  border: 0;
   border-bottom: 1px solid var(--border);
+  border-radius: 0;
   color: var(--text-muted);
   font-size: 12px;
   gap: var(--space-2);
@@ -1705,11 +1636,7 @@ button.check-chip:hover {
   display: grid;
   gap: var(--space-2);
   padding: var(--space-3);
-  position: absolute;
-  right: 0;
-  top: calc(100% + 8px);
   width: min(360px, calc(100vw - 48px));
-  z-index: 50;
 }
 
 .file-comment-popover textarea {
