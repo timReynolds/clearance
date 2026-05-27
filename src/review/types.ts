@@ -122,6 +122,27 @@ export type ReviewSnapshotCapabilities = {
   mode: ReviewSnapshotMode;
 };
 
+export type ReviewRequirementSummary = {
+  approvedBy: string[];
+  approvedHeadSha?: string;
+  assignedReviewers: string[];
+  label: string;
+  pendingSince?: string;
+  relevantFiles: string[];
+  requiredCount: number;
+  status: "approved" | "pending";
+};
+
+export type ReviewStateSummary = {
+  dryRun: boolean;
+  override?: {
+    actor: string;
+    at: string;
+  };
+  requirements: ReviewRequirementSummary[];
+  warnings: string[];
+};
+
 export type ReviewSnapshot = {
   activity: ReviewActivity;
   attention: ReviewAttention;
@@ -130,6 +151,7 @@ export type ReviewSnapshot = {
   files: ReviewFile[];
   patchsets: ReviewPatchset[];
   pullRequest: ReviewPullRequestSummary;
+  reviewState: ReviewStateSummary;
   threads: ReviewThread[];
   viewer?: ReviewUser;
 };

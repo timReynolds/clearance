@@ -134,6 +134,11 @@ function createSnapshot(
       state: "open",
       title: "Public PR",
     },
+    reviewState: {
+      dryRun: false,
+      requirements: [],
+      warnings: [],
+    },
     threads: [],
     viewer: viewerLogin === undefined ? undefined : { login: viewerLogin },
   };

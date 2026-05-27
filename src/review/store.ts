@@ -23,6 +23,7 @@ import type {
   ReviewMarkState,
   ReviewPatchset,
   ReviewSnapshot,
+  ReviewStateSummary,
   ReviewThread,
 } from "./types.js";
 import { relocateAnchor } from "./anchors.js";
@@ -317,6 +318,7 @@ export class DrizzleReviewStore {
         state: "unknown",
         title: `${pullRequest.owner}/${pullRequest.repo}#${pullRequest.pullNumber}`,
       },
+      reviewState: buildReviewStateSummary(pullRequest.state),
       threads: [...threadsById.values()],
       viewer: viewerLogin === undefined ? undefined : { login: viewerLogin },
     };
@@ -1235,6 +1237,30 @@ function buildDefaultAttentionMembers(pullRequest: PullRequestRow): ReviewAttent
     login,
     reason: "Requested review",
   }));
+}
+
+function buildReviewStateSummary(state: PullRequestRow["state"]): ReviewStateSummary {
+  return {
+    dryRun: state.dryRun === true,
+    override:
+      state.override === undefined
+        ? undefined
+        : {
+            actor: state.override.actor,
+            at: state.override.at,
+          },
+    requirements: state.requirements.map((requirement) => ({
+      approvedBy: requirement.approvedBy,
+      approvedHeadSha: requirement.approvedHeadSha,
+      assignedReviewers: requirement.assignedReviewers ?? [],
+      label: requirement.label,
+      pendingSince: requirement.pendingSince,
+      relevantFiles: requirement.relevantFiles ?? [],
+      requiredCount: requirement.requiredCount,
+      status: requirement.status,
+    })),
+    warnings: state.warnings.map((warning) => warning.message),
+  };
 }
 
 function getDefaultFromPatchset(patchsets: ReviewPatchset[], marks: ReviewMarkRow[]): number {

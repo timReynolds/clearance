@@ -81,6 +81,69 @@ test("persists diff option changes", async ({ page }) => {
   });
 });
 
+test("persists the key binding style menu option", async ({ page }) => {
+  await mockReviewApi(page);
+  await page.goto("/review/acme/repo/pull/1");
+
+  await page.locator("summary.review-button", { hasText: "Options" }).click();
+  await page.locator(".diff-options-popover").getByRole("button", { name: "GitHub" }).click();
+
+  await expect
+    .poll(() => page.evaluate(() => window.localStorage.getItem("clearance.keyBindingStyle")))
+    .toBe("github");
+
+  await page.reload();
+  await page.locator("summary.review-button", { hasText: "Options" }).click();
+
+  await expect(
+    page.locator(".diff-options-popover").getByRole("button", { name: "GitHub" }),
+  ).toHaveClass(/active/);
+});
+
+test("uses VS Code key bindings by default", async ({ page }) => {
+  await mockReviewApi(page);
+  await page.goto("/review/acme/repo/pull/1");
+
+  await page.getByRole("button", { name: "web/styles.css" }).click();
+  await expect(selectedFileName(page)).toHaveText("web/styles.css");
+
+  await page.keyboard.press("]");
+  await expect(selectedFileName(page)).toHaveText("web/styles.css");
+
+  await page.keyboard.press("F8");
+  await expect(selectedFileName(page)).toHaveText("web/main.tsx");
+
+  await page.keyboard.press("Control+P");
+  await expect(page.getByLabel("Filter changed files")).toBeFocused();
+});
+
+test("uses GitHub key bindings when selected", async ({ page }) => {
+  const actions = await mockReviewApi(page);
+  await page.goto("/review/acme/repo/pull/1");
+
+  await page.locator("summary.review-button", { hasText: "Options" }).click();
+  await page.locator(".diff-options-popover").getByRole("button", { name: "GitHub" }).click();
+
+  await page.keyboard.press("]");
+  await expect(selectedFileName(page)).toHaveText("web/styles.css");
+
+  await page.keyboard.press("[");
+  await expect(selectedFileName(page)).toHaveText("web/main.tsx");
+
+  await page.keyboard.press("v");
+  await expect.poll(() => actions.some((action) => action.pathname.endsWith("/marks"))).toBe(true);
+  expect(actions.find((action) => action.pathname.endsWith("/marks"))).toMatchObject({
+    body: {
+      filePath: "web/main.tsx",
+      patchsetNumber: 2,
+    },
+    pathname: "/api/review/acme/repo/pull/1/marks",
+  });
+
+  await page.keyboard.press("t");
+  await expect(page.getByLabel("Filter changed files")).toBeFocused();
+});
+
 test("requests a patchset comparison when the rail selection changes", async ({ page }) => {
   await mockReviewApi(page);
   await page.goto("/review/acme/repo/pull/1");
@@ -105,9 +168,9 @@ test("passes reviewer attention", async ({ page }) => {
   const actions = await mockReviewApi(page);
   await page.goto("/review/acme/repo/pull/1");
 
-  await page.locator("summary.review-button", { hasText: "Pass" }).click();
+  await page.locator("summary.attention-summary").click();
   await page.getByLabel("Pass attention to").fill("sarah");
-  await page.locator(".pass-popover").getByRole("button", { name: "Pass" }).click();
+  await page.locator(".attention-popover").getByRole("button", { name: "Pass" }).click();
 
   await expect
     .poll(() => actions.some((action) => action.pathname.endsWith("/attention/pass")))
@@ -215,6 +278,10 @@ type ActionRequest = {
   pathname: string;
 };
 
+function selectedFileName(page: Page) {
+  return page.locator("section.file-diff-section.selected .file-header-title strong");
+}
+
 function buildReviewSnapshotForUrl(url: URL): ReviewSnapshot {
   const fromPatchsetNumber = Number.parseInt(url.searchParams.get("from") ?? "", 10);
   const toPatchsetNumber = Number.parseInt(url.searchParams.get("to") ?? "", 10);
@@ -303,6 +370,21 @@ const reviewSnapshot: ReviewSnapshot = {
     repo: "repo",
     state: "open",
     title: "Use shadcn with Base UI",
+  },
+  reviewState: {
+    dryRun: false,
+    requirements: [
+      {
+        approvedBy: [],
+        assignedReviewers: ["tim"],
+        label: "Owner review",
+        pendingSince: "2026-05-27T09:00:00.000Z",
+        relevantFiles: ["web/main.tsx"],
+        requiredCount: 1,
+        status: "pending",
+      },
+    ],
+    warnings: [],
   },
   threads: [],
   viewer: {

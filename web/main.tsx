@@ -1,4 +1,12 @@
-import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type RefObject,
+  type SetStateAction,
+} from "react";
 import { createRoot } from "react-dom/client";
 import { PatchDiff } from "@pierre/diffs/react";
 import type {
@@ -39,6 +47,10 @@ const defaultDiffOptions: DiffViewerOptions = {
   lineNumbers: true,
   wrapping: false,
 };
+const keyBindingStyleOptions = [
+  { label: "VS Code", value: "vscode" },
+  { label: "GitHub", value: "github" },
+] satisfies { label: string; value: KeyboardBindingStyle }[];
 
 function App() {
   const route = parseReviewRoute(window.location.pathname);
@@ -49,9 +61,13 @@ function App() {
   const [draftComments, setDraftComments] = useState<Record<string, string>>({});
   const [reviewBody, setReviewBody] = useState("");
   const [commentTarget, setCommentTarget] = useState<CommentTarget | undefined>();
+  const [selectedThreadId, setSelectedThreadId] = useState<string | undefined>();
+  const [selectedIssueKey, setSelectedIssueKey] = useState<string | undefined>();
   const [passTarget, setPassTarget] = useState("");
   const [actionError, setActionError] = useState<string | undefined>();
   const [diffOptions, setDiffOptions] = useState(readDiffOptions);
+  const [keyBindingStyle, setKeyBindingStyle] =
+    useState<KeyboardBindingStyle>(readKeyboardBindingStyle);
   const [tokenHover, setTokenHover] = useState<TokenHover | undefined>();
   const [comparisonSelection, setComparisonSelection] = useState<{
     from?: number;
@@ -59,6 +75,7 @@ function App() {
   }>({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | undefined>();
+  const fileFilterRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     writeLocalPreference("clearance.viewer", viewerLogin);
@@ -67,6 +84,10 @@ function App() {
   useEffect(() => {
     writeLocalPreference("clearance.diffOptions", JSON.stringify(diffOptions));
   }, [diffOptions]);
+
+  useEffect(() => {
+    writeLocalPreference("clearance.keyBindingStyle", keyBindingStyle);
+  }, [keyBindingStyle]);
 
   useEffect(() => {
     let cancelled = false;
@@ -146,12 +167,15 @@ function App() {
     );
   }
 
+  const activeSnapshot = snapshot;
   const hasPatchsetControls = snapshot.patchsets.length > 1;
   const canShowTurnIndicator =
     me?.authenticated === true && snapshot.capabilities.mode === "indexed";
   const canUseReviewerActions = canShowTurnIndicator && snapshot.attention.isViewerTurn;
+  const canManageAttention = me?.authenticated === true && snapshot.capabilities.mode === "indexed";
   const canMarkReviewed = me?.authenticated === true && snapshot.capabilities.mode === "indexed";
   const threadStatsByPath = buildFileThreadStatsByPath(snapshot.threads);
+  const reviewModel = buildReviewModel(snapshot);
 
   function actionHeaders(hasJsonBody = false): Record<string, string> {
     return {
@@ -182,11 +206,15 @@ function App() {
 
     setComparisonSelection({ from, to });
     setSelectedPath(undefined);
+    setSelectedThreadId(undefined);
+    setSelectedIssueKey(undefined);
     setCommentTarget(undefined);
   }
 
   function jumpToFile(path: string): void {
     setSelectedPath(path);
+    setSelectedThreadId(undefined);
+    setSelectedIssueKey(undefined);
     window.requestAnimationFrame(() => {
       document.getElementById(fileSectionId(path))?.scrollIntoView({
         behavior: "smooth",
@@ -274,6 +302,76 @@ function App() {
 
     setPassTarget("");
     await refreshReview();
+  }
+
+  async function markNotMyTurn(): Promise<void> {
+    setActionError(undefined);
+    const response = await postJson("/attention/not-my-turn");
+    if (!response.ok) {
+      setActionError(await readActionError(response));
+      return;
+    }
+
+    await refreshReview();
+  }
+
+  function navigateToTarget(target: ReviewNavigationTarget | undefined): void {
+    if (target === undefined) {
+      return;
+    }
+
+    setSelectedIssueKey(reviewTargetKey(target));
+    if (target.type === "file") {
+      jumpToFile(target.path);
+      setSelectedIssueKey(reviewTargetKey(target));
+      return;
+    }
+
+    setSelectedPath(target.path);
+    setSelectedThreadId(target.threadId);
+    window.requestAnimationFrame(() => {
+      document.getElementById(threadSectionId(target.threadId))?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    });
+  }
+
+  function navigateFile(direction: 1 | -1): void {
+    if (activeSnapshot.files.length === 0) {
+      return;
+    }
+
+    const currentIndex = Math.max(
+      0,
+      selectedPath === undefined
+        ? 0
+        : activeSnapshot.files.findIndex((file) => file.path === selectedPath),
+    );
+    const nextIndex = wrapIndex(currentIndex + direction, activeSnapshot.files.length);
+    const nextFile = activeSnapshot.files[nextIndex];
+    if (nextFile !== undefined) {
+      jumpToFile(nextFile.path);
+    }
+  }
+
+  function navigateReviewIssue(direction: 1 | -1): void {
+    const targets = buildReviewIssueTargets(activeSnapshot);
+    if (targets.length === 0) {
+      return;
+    }
+
+    const currentIndex = getCurrentReviewTargetIndex(targets, selectedIssueKey, selectedThreadId);
+    const nextIndex = wrapIndex(currentIndex + direction, targets.length);
+    navigateToTarget(targets[nextIndex]);
+  }
+
+  function markCurrentFileReviewed(): void {
+    const file =
+      activeSnapshot.files.find((entry) => entry.path === selectedPath) ?? activeSnapshot.files[0];
+    if (file !== undefined && canMarkReviewed) {
+      void markReviewed(file);
+    }
   }
 
   async function createThread(
@@ -412,12 +510,18 @@ function App() {
 
         <section className="statebar">
           <div className="state-summary">
-            {canShowTurnIndicator ? (
-              <span className={`turn-indicator ${snapshot.attention.isViewerTurn ? "active" : ""}`}>
-                <i />
-                {snapshot.attention.isViewerTurn ? "Your turn" : "Not your turn"}
-              </span>
-            ) : null}
+            <AttentionMenu
+              actionTarget={reviewModel.firstActionTarget}
+              canManage={canManageAttention}
+              error={actionError}
+              onNavigate={navigateToTarget}
+              onNotMyTurn={markNotMyTurn}
+              onPass={passAttention}
+              onPassTargetChange={setPassTarget}
+              passTarget={passTarget}
+              snapshot={snapshot}
+              showTurnState={canShowTurnIndicator}
+            />
             <StatusPill label={snapshot.capabilities.mode} tone="cool" />
             {hasPatchsetControls ? (
               <StatusPill label={`${snapshot.patchsets.length} patchsets`} tone="cool" />
@@ -486,35 +590,16 @@ function App() {
                   </div>
                 </div>
               </details>
-              <details className="pass-menu">
-                <summary className="review-button">
-                  <Send size={15} />
-                  Pass
-                  <ChevronDown size={14} />
-                </summary>
-                <div className="pass-popover">
-                  <label>
-                    <span>Pass to</span>
-                    <input
-                      aria-label="Pass attention to"
-                      onChange={(event) => setPassTarget(event.target.value)}
-                      placeholder="Reviewer login"
-                      value={passTarget}
-                    />
-                  </label>
-                  <Button onClick={() => void passAttention()} size="sm" type="button">
-                    <Send size={15} />
-                    Pass
-                  </Button>
-                </div>
-              </details>
             </div>
           ) : null}
         </section>
 
+        <ReviewOverview model={reviewModel} onNavigate={navigateToTarget} />
+
         <div className="review-grid">
           <aside className="file-pane">
             <ReviewFileList
+              filterInputRef={fileFilterRef}
               files={snapshot.files}
               onSelect={jumpToFile}
               selectedPath={selectedPath}
@@ -525,7 +610,9 @@ function App() {
           <main className="diff-pane">
             <DiffToolbar
               fileCount={snapshot.files.length}
+              keyBindingStyle={keyBindingStyle}
               onChange={updateDiffOption}
+              onKeyBindingStyleChange={setKeyBindingStyle}
               options={diffOptions}
             />
             {hasPatchsetControls ? (
@@ -543,6 +630,7 @@ function App() {
                   draftComment={draftComments[file.path] ?? ""}
                   file={file}
                   key={file.path}
+                  keyBindingStyle={keyBindingStyle}
                   onClearCommentTarget={() => setCommentTarget(undefined)}
                   onCreateThread={createThread}
                   onDraftCommentChange={(value) => updateDraftComment(file.path, value)}
@@ -550,7 +638,9 @@ function App() {
                   onReply={replyToThread}
                   onResolve={resolveThread}
                   onSelectFile={setSelectedPath}
+                  onSelectThread={setSelectedThreadId}
                   selected={file.path === selectedPath}
+                  selectedThreadId={selectedThreadId}
                   setTokenHover={setTokenHover}
                   setCommentTarget={setCommentTarget}
                   snapshot={snapshot}
@@ -559,6 +649,15 @@ function App() {
             )}
           </main>
         </div>
+        <ReviewKeyboardController
+          canMarkReviewed={canMarkReviewed}
+          fileFilterRef={fileFilterRef}
+          keyBindingStyle={keyBindingStyle}
+          onClearCommentTarget={() => setCommentTarget(undefined)}
+          onMarkCurrentFileReviewed={markCurrentFileReviewed}
+          onNavigateFile={navigateFile}
+          onNavigateReviewIssue={navigateReviewIssue}
+        />
         {tokenHover === undefined ? null : <TokenHoverCard hover={tokenHover} />}
       </div>
     </TooltipProvider>
@@ -566,6 +665,7 @@ function App() {
 }
 
 function ReviewFileList(props: {
+  filterInputRef: RefObject<HTMLInputElement | null>;
   files: ReviewFile[];
   onSelect(path: string): void;
   selectedPath?: string;
@@ -584,6 +684,7 @@ function ReviewFileList(props: {
         <Search size={14} />
         <input
           aria-label="Filter changed files"
+          ref={props.filterInputRef}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Filter changed files"
           value={query}
@@ -652,11 +753,15 @@ function ReviewFileList(props: {
 
 function DiffToolbar({
   fileCount,
+  keyBindingStyle,
   onChange,
+  onKeyBindingStyleChange,
   options,
 }: {
   fileCount: number;
+  keyBindingStyle: KeyboardBindingStyle;
   onChange<T extends keyof DiffViewerOptions>(key: T, value: DiffViewerOptions[T]): void;
+  onKeyBindingStyleChange(value: KeyboardBindingStyle): void;
   options: DiffViewerOptions;
 }) {
   return (
@@ -693,6 +798,14 @@ function DiffToolbar({
                 { label: "Split", value: "split" },
               ]}
               value={options.diffStyle}
+            />
+          </fieldset>
+          <fieldset>
+            <legend>Key bindings</legend>
+            <SegmentedControl
+              onChange={(value) => onKeyBindingStyleChange(value as KeyboardBindingStyle)}
+              options={keyBindingStyleOptions}
+              value={keyBindingStyle}
             />
           </fieldset>
           <label className="select-setting">
@@ -777,6 +890,332 @@ function ToggleSetting({
   );
 }
 
+function AttentionMenu({
+  actionTarget,
+  canManage,
+  error,
+  onNavigate,
+  onNotMyTurn,
+  onPass,
+  onPassTargetChange,
+  passTarget,
+  showTurnState,
+  snapshot,
+}: {
+  actionTarget?: ReviewNavigationTarget;
+  canManage: boolean;
+  error?: string;
+  onNavigate(target: ReviewNavigationTarget | undefined): void;
+  onNotMyTurn(): Promise<void>;
+  onPass(): Promise<void>;
+  onPassTargetChange(value: string): void;
+  passTarget: string;
+  showTurnState: boolean;
+  snapshot: ReviewSnapshot;
+}) {
+  const members = snapshot.attention.members;
+  const isViewerTurn = showTurnState && snapshot.attention.isViewerTurn;
+  const isStale = members.some((member) => isOlderThanHours(member.addedAt, 24));
+
+  return (
+    <details className="attention-menu">
+      <summary
+        className={["attention-summary", isViewerTurn ? "active" : "", isStale ? "stale" : ""].join(
+          " ",
+        )}
+      >
+        <i />
+        <span>{getAttentionSummary(snapshot, showTurnState)}</span>
+        <ChevronDown size={14} />
+      </summary>
+      <div className="attention-popover">
+        <div className="attention-heading">
+          <strong>{isViewerTurn ? "Your turn" : "Attention"}</strong>
+          <span>{getAttentionDetail(snapshot, showTurnState)}</span>
+        </div>
+        <div className="attention-members">
+          {members.length === 0 ? (
+            <span className="attention-empty">No active attention members</span>
+          ) : (
+            members.map((member) => (
+              <div className="attention-member" key={member.login}>
+                <Avatar login={member.login} />
+                <div>
+                  <strong>{member.login}</strong>
+                  <span>
+                    {member.reason} · {formatRelative(member.addedAt)}
+                  </span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+        <div className="attention-actions">
+          <button
+            disabled={actionTarget === undefined}
+            onClick={() => onNavigate(actionTarget)}
+            type="button"
+          >
+            <CircleAlert size={14} />
+            Open next item
+          </button>
+          <button
+            disabled={!canManage || !snapshot.attention.isViewerTurn}
+            onClick={() => void onNotMyTurn()}
+            type="button"
+          >
+            <Check size={14} />
+            Not my turn
+          </button>
+        </div>
+        <div className="attention-pass">
+          <input
+            aria-label="Pass attention to"
+            disabled={!canManage}
+            onChange={(event) => onPassTargetChange(event.target.value)}
+            placeholder="Reviewer login"
+            value={passTarget}
+          />
+          <button disabled={!canManage || passTarget.trim() === ""} onClick={() => void onPass()}>
+            <Send size={14} />
+            Pass
+          </button>
+        </div>
+        {error === undefined ? null : <span className="action-error">{error}</span>}
+      </div>
+    </details>
+  );
+}
+
+function ReviewOverview({
+  model,
+  onNavigate,
+}: {
+  model: ReviewModel;
+  onNavigate(target: ReviewNavigationTarget | undefined): void;
+}) {
+  return (
+    <section className="review-overview">
+      <details className={`readiness-panel ${model.readiness.tone}`}>
+        <summary className="readiness-summary">
+          <span className="readiness-dot" />
+          <strong>{model.readiness.label}</strong>
+          <span>{model.readiness.detail}</span>
+          <ChevronDown size={14} />
+        </summary>
+        <div className="readiness-details">
+          <div>
+            <h2>Needs Attention</h2>
+            {model.readiness.blockers.length === 0 ? (
+              <p>No blocking review items are currently known.</p>
+            ) : (
+              model.readiness.blockers.map((item) => (
+                <button
+                  disabled={item.target === undefined}
+                  key={item.id}
+                  onClick={() => onNavigate(item.target)}
+                  type="button"
+                >
+                  <strong>{item.label}</strong>
+                  <span>{item.detail}</span>
+                </button>
+              ))
+            )}
+          </div>
+          <div>
+            <h2>Satisfied</h2>
+            {model.readiness.satisfied.length === 0 ? (
+              <p>No satisfied review items yet.</p>
+            ) : (
+              model.readiness.satisfied.map((item) => (
+                <span className="readiness-satisfied" key={item.id}>
+                  <Check size={13} />
+                  {item.label}
+                </span>
+              ))
+            )}
+          </div>
+        </div>
+      </details>
+      <div className="check-chip-row">
+        {model.chips.map((chip) =>
+          chip.target === undefined ? (
+            <span className={`check-chip ${chip.tone}`} key={chip.id}>
+              <i />
+              <strong>{chip.label}</strong>
+              <span>{chip.value}</span>
+            </span>
+          ) : (
+            <button
+              className={`check-chip ${chip.tone}`}
+              key={chip.id}
+              onClick={() => onNavigate(chip.target)}
+              type="button"
+            >
+              <i />
+              <strong>{chip.label}</strong>
+              <span>{chip.value}</span>
+            </button>
+          ),
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ReviewKeyboardController({
+  canMarkReviewed,
+  fileFilterRef,
+  keyBindingStyle,
+  onClearCommentTarget,
+  onMarkCurrentFileReviewed,
+  onNavigateFile,
+  onNavigateReviewIssue,
+}: {
+  canMarkReviewed: boolean;
+  fileFilterRef: RefObject<HTMLInputElement | null>;
+  keyBindingStyle: KeyboardBindingStyle;
+  onClearCommentTarget(): void;
+  onMarkCurrentFileReviewed(): void;
+  onNavigateFile(direction: 1 | -1): void;
+  onNavigateReviewIssue(direction: 1 | -1): void;
+}) {
+  const chordTimeoutRef = useRef<number | undefined>(undefined);
+  const chordActiveRef = useRef(false);
+
+  useEffect(() => {
+    function clearChord(): void {
+      chordActiveRef.current = false;
+      if (chordTimeoutRef.current !== undefined) {
+        window.clearTimeout(chordTimeoutRef.current);
+        chordTimeoutRef.current = undefined;
+      }
+    }
+
+    function startChord(): void {
+      clearChord();
+      chordActiveRef.current = true;
+      chordTimeoutRef.current = window.setTimeout(clearChord, 1400);
+    }
+
+    function focusFileFilter(event: globalThis.KeyboardEvent): void {
+      event.preventDefault();
+      fileFilterRef.current?.focus();
+      fileFilterRef.current?.select();
+    }
+
+    function handleKeyDown(event: globalThis.KeyboardEvent): void {
+      const key = event.key.toLowerCase();
+      const primaryModifier = event.metaKey || event.ctrlKey;
+
+      if (chordActiveRef.current) {
+        if (key === "v" && canMarkReviewed) {
+          event.preventDefault();
+          onMarkCurrentFileReviewed();
+        }
+        clearChord();
+        return;
+      }
+
+      if (isEditableTarget(event.target)) {
+        if (event.key === "Escape") {
+          onClearCommentTarget();
+        }
+        if (keyBindingStyle === "vscode" && primaryModifier && !event.shiftKey && key === "p") {
+          focusFileFilter(event);
+        }
+        return;
+      }
+
+      if (keyBindingStyle === "vscode") {
+        if (primaryModifier && !event.shiftKey && key === "p") {
+          focusFileFilter(event);
+          return;
+        }
+
+        if (primaryModifier && !event.shiftKey && key === "k") {
+          event.preventDefault();
+          startChord();
+          return;
+        }
+
+        if (event.key === "F8") {
+          event.preventDefault();
+          onNavigateReviewIssue(event.shiftKey ? -1 : 1);
+          return;
+        }
+
+        if (primaryModifier && event.key === "PageDown") {
+          event.preventDefault();
+          onNavigateFile(1);
+          return;
+        }
+
+        if (primaryModifier && event.key === "PageUp") {
+          event.preventDefault();
+          onNavigateFile(-1);
+          return;
+        }
+      } else if (!event.altKey && !event.ctrlKey && !event.metaKey) {
+        if (key === "t") {
+          focusFileFilter(event);
+          return;
+        }
+
+        if (key === "j") {
+          event.preventDefault();
+          onNavigateReviewIssue(1);
+          return;
+        }
+
+        if (key === "k") {
+          event.preventDefault();
+          onNavigateReviewIssue(-1);
+          return;
+        }
+
+        if (event.key === "]") {
+          event.preventDefault();
+          onNavigateFile(1);
+          return;
+        }
+
+        if (event.key === "[") {
+          event.preventDefault();
+          onNavigateFile(-1);
+          return;
+        }
+
+        if (key === "v" && canMarkReviewed) {
+          event.preventDefault();
+          onMarkCurrentFileReviewed();
+          return;
+        }
+      }
+
+      if (event.key === "Escape") {
+        onClearCommentTarget();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      clearChord();
+    };
+  }, [
+    canMarkReviewed,
+    fileFilterRef,
+    keyBindingStyle,
+    onClearCommentTarget,
+    onMarkCurrentFileReviewed,
+    onNavigateFile,
+    onNavigateReviewIssue,
+  ]);
+
+  return null;
+}
+
 type FileThreadStats = {
   commentCount: number;
   openThreadCount: number;
@@ -846,6 +1285,269 @@ function fileSectionId(path: string): string {
   return `file-${encodeURIComponent(path)}`;
 }
 
+function threadSectionId(threadId: string): string {
+  return `thread-${encodeURIComponent(threadId)}`;
+}
+
+function buildReviewModel(snapshot: ReviewSnapshot): ReviewModel {
+  const openThreads = snapshot.threads.filter((thread) => thread.status === "open");
+  const newThreads = snapshot.threads.filter((thread) =>
+    thread.comments.some((comment) => comment.newSinceLastVisit),
+  );
+  const pendingRequirements = snapshot.reviewState.requirements.filter(
+    (requirement) => requirement.status !== "approved",
+  );
+  const approvedRequirements = snapshot.reviewState.requirements.filter(
+    (requirement) => requirement.status === "approved",
+  );
+  const unreviewedFiles = snapshot.files.filter((file) => file.markState === "unreviewed");
+  const staleFiles = snapshot.files.filter((file) => file.markState === "stale");
+  const viewedFiles = snapshot.files.filter((file) => file.markState === "current");
+  const firstOpenThreadTarget = openThreads.map(createThreadTarget).find(isDefined);
+  const firstNewThreadTarget = newThreads.map(createThreadTarget).find(isDefined);
+  const firstUnreviewedFile = [...staleFiles, ...unreviewedFiles][0];
+  const firstRequirementFile = pendingRequirements
+    .flatMap((requirement) => requirement.relevantFiles)
+    .find((path) => snapshot.files.some((file) => file.path === path));
+  const firstFileTarget =
+    firstUnreviewedFile === undefined ? undefined : createFileTarget(firstUnreviewedFile.path);
+  const firstRequirementTarget =
+    firstRequirementFile === undefined ? undefined : createFileTarget(firstRequirementFile);
+  const warnings = snapshot.reviewState.warnings;
+  const limitations = snapshot.capabilities.limitations;
+  const firstActionTarget =
+    firstNewThreadTarget ?? firstOpenThreadTarget ?? firstFileTarget ?? firstRequirementTarget;
+  const blockers: ReviewReadinessItem[] = [];
+  const satisfied: ReviewReadinessItem[] = [];
+
+  if (snapshot.capabilities.mode === "public") {
+    blockers.push({
+      detail: "Install or index the repository to enable durable review state.",
+      id: "mode-public",
+      label: "Public preview has limited review state",
+    });
+  }
+
+  if (pendingRequirements.length > 0) {
+    blockers.push({
+      detail: pendingRequirements.map((requirement) => requirement.label).join(", "),
+      id: "requirements-pending",
+      label: `${pendingRequirements.length} ${plural(pendingRequirements.length, "requirement")} pending`,
+      target: firstRequirementTarget,
+    });
+  }
+
+  if (openThreads.length > 0) {
+    blockers.push({
+      detail: "Resolve or reply to open review conversations.",
+      id: "threads-open",
+      label: `${openThreads.length} unresolved ${plural(openThreads.length, "thread")}`,
+      target: firstOpenThreadTarget,
+    });
+  }
+
+  if (staleFiles.length + unreviewedFiles.length > 0 && snapshot.capabilities.mode === "indexed") {
+    blockers.push({
+      detail: `${viewedFiles.length}/${snapshot.files.length} files are marked viewed.`,
+      id: "files-unreviewed",
+      label: `${staleFiles.length + unreviewedFiles.length} ${plural(
+        staleFiles.length + unreviewedFiles.length,
+        "file",
+      )} need review`,
+      target: firstFileTarget,
+    });
+  }
+
+  if (warnings.length > 0) {
+    blockers.push({
+      detail: warnings.slice(0, 2).join(", "),
+      id: "warnings",
+      label: `${warnings.length} Clearance ${plural(warnings.length, "warning")}`,
+    });
+  }
+
+  if (approvedRequirements.length > 0) {
+    satisfied.push({
+      detail: approvedRequirements.map((requirement) => requirement.label).join(", "),
+      id: "requirements-approved",
+      label: `${approvedRequirements.length} ${plural(approvedRequirements.length, "requirement")} satisfied`,
+    });
+  }
+
+  if (openThreads.length === 0) {
+    satisfied.push({
+      detail: "No unresolved review conversations are known.",
+      id: "threads-clear",
+      label: "Threads clear",
+    });
+  }
+
+  if (snapshot.files.length > 0 && viewedFiles.length === snapshot.files.length) {
+    satisfied.push({
+      detail: "Every displayed file is marked viewed.",
+      id: "files-viewed",
+      label: "Files viewed",
+    });
+  }
+
+  const readiness = buildReadiness({
+    blockers,
+    openThreads,
+    pendingRequirements,
+    snapshot,
+    staleFiles,
+    unreviewedFiles,
+  });
+
+  return {
+    chips: [
+      {
+        id: "clearance-review",
+        label: "clearance/review",
+        tone: readiness.tone,
+        value: readiness.label,
+        target: firstActionTarget,
+      },
+      {
+        id: "clearance-config",
+        label: "clearance/config",
+        tone: warnings.length === 0 ? "success" : "warning",
+        value:
+          warnings.length === 0
+            ? "valid"
+            : `${warnings.length} ${plural(warnings.length, "warning")}`,
+      },
+      {
+        id: "threads",
+        label: "threads",
+        tone: openThreads.length === 0 ? "success" : "warning",
+        value: openThreads.length === 0 ? "clear" : `${openThreads.length} open`,
+        target: firstOpenThreadTarget,
+      },
+      {
+        id: "files",
+        label: "files",
+        tone:
+          snapshot.capabilities.mode === "public"
+            ? "info"
+            : staleFiles.length + unreviewedFiles.length === 0
+              ? "success"
+              : "warning",
+        value:
+          snapshot.capabilities.mode === "public"
+            ? `${snapshot.files.length} files`
+            : `${viewedFiles.length}/${snapshot.files.length} viewed`,
+        target: firstFileTarget,
+      },
+      {
+        id: "mode",
+        label: "mode",
+        tone: snapshot.capabilities.mode === "indexed" ? "success" : "info",
+        value:
+          limitations.length === 0
+            ? snapshot.capabilities.mode
+            : `${snapshot.capabilities.mode}, ${limitations.length} ${plural(limitations.length, "limit")}`,
+      },
+      ...(snapshot.activity.newCommentCount === 0
+        ? []
+        : [
+            {
+              id: "activity",
+              label: "activity",
+              tone: "warning" as const,
+              value: `${snapshot.activity.newCommentCount} new`,
+              target: firstNewThreadTarget,
+            },
+          ]),
+    ],
+    firstActionTarget,
+    readiness: {
+      ...readiness,
+      blockers,
+      satisfied,
+    },
+  };
+}
+
+function buildReadiness(input: {
+  blockers: ReviewReadinessItem[];
+  openThreads: ReviewThread[];
+  pendingRequirements: ReviewSnapshot["reviewState"]["requirements"];
+  snapshot: ReviewSnapshot;
+  staleFiles: ReviewFile[];
+  unreviewedFiles: ReviewFile[];
+}): Omit<ReviewReadiness, "blockers" | "satisfied"> {
+  if (input.snapshot.capabilities.mode === "public") {
+    return {
+      detail: "Indexed requirements, viewed files, and attention writes are unavailable.",
+      label: "Public preview",
+      state: "limited",
+      tone: "info",
+    };
+  }
+
+  if (input.snapshot.reviewState.override !== undefined) {
+    return {
+      detail: `Override by ${input.snapshot.reviewState.override.actor}`,
+      label: "Ready by override",
+      state: "ready",
+      tone: "success",
+    };
+  }
+
+  if (input.pendingRequirements.length > 0) {
+    return {
+      detail: `${input.pendingRequirements.length} ${plural(
+        input.pendingRequirements.length,
+        "owner requirement",
+      )} still pending.`,
+      label: "Needs owner review",
+      state: "waiting-on-review",
+      tone: "warning",
+    };
+  }
+
+  if (input.openThreads.length > 0) {
+    const waitingOnAuthor = input.snapshot.attention.members.some(
+      (member) => member.login === input.snapshot.pullRequest.author,
+    );
+    return {
+      detail: `${input.openThreads.length} unresolved ${plural(input.openThreads.length, "thread")}.`,
+      label: waitingOnAuthor ? "Needs author" : "Unresolved threads",
+      state: waitingOnAuthor ? "waiting-on-author" : "blocked",
+      tone: "warning",
+    };
+  }
+
+  if (input.staleFiles.length + input.unreviewedFiles.length > 0) {
+    return {
+      detail: `${input.staleFiles.length + input.unreviewedFiles.length} ${plural(
+        input.staleFiles.length + input.unreviewedFiles.length,
+        "file",
+      )} need review marks.`,
+      label: "Review in progress",
+      state: "waiting-on-review",
+      tone: "warning",
+    };
+  }
+
+  if (input.blockers.length > 0) {
+    return {
+      detail: "Review metadata has warnings to inspect.",
+      label: "Needs attention",
+      state: "blocked",
+      tone: "warning",
+    };
+  }
+
+  return {
+    detail: "Requirements, threads, and file marks are clear.",
+    label: "Ready",
+    state: "ready",
+    tone: "success",
+  };
+}
+
 function ReviewFileSection({
   actionError,
   canMarkReviewed,
@@ -853,6 +1555,7 @@ function ReviewFileSection({
   diffOptions,
   draftComment,
   file,
+  keyBindingStyle,
   onClearCommentTarget,
   onCreateThread,
   onDraftCommentChange,
@@ -860,7 +1563,9 @@ function ReviewFileSection({
   onReply,
   onResolve,
   onSelectFile,
+  onSelectThread,
   selected,
+  selectedThreadId,
   setTokenHover,
   setCommentTarget,
   snapshot,
@@ -871,6 +1576,7 @@ function ReviewFileSection({
   diffOptions: DiffViewerOptions;
   draftComment: string;
   file: ReviewFile;
+  keyBindingStyle: KeyboardBindingStyle;
   onClearCommentTarget(): void;
   onCreateThread(file: ReviewFile, anchor?: ThreadAnchorMode): Promise<void>;
   onDraftCommentChange(value: string): void;
@@ -878,7 +1584,9 @@ function ReviewFileSection({
   onReply(threadId: string, body: string): Promise<void>;
   onResolve(threadId: string): Promise<void>;
   onSelectFile(path: string): void;
+  onSelectThread(threadId: string): void;
   selected: boolean;
+  selectedThreadId?: string;
   setTokenHover: Dispatch<SetStateAction<TokenHover | undefined>>;
   setCommentTarget: Dispatch<SetStateAction<CommentTarget | undefined>>;
   snapshot: ReviewSnapshot;
@@ -913,6 +1621,12 @@ function ReviewFileSection({
                   onSelectFile(file.path);
                   onClearCommentTarget();
                 }}
+                onKeyDown={(event) => {
+                  if (isSubmitShortcut(event) && draftComment.trim() !== "") {
+                    event.preventDefault();
+                    void onCreateThread(file, "file");
+                  }
+                }}
                 placeholder="Leave a file-level review thread"
                 value={draftComment}
               />
@@ -940,7 +1654,7 @@ function ReviewFileSection({
             <button
               className={`viewed-button ${file.markState === "current" ? "viewed" : ""}`}
               onClick={() => void onMarkReviewed(file)}
-              title="Mark this file as reviewed"
+              title={getViewedShortcutTitle(keyBindingStyle)}
               type="button"
             >
               <span />
@@ -996,6 +1710,8 @@ function ReviewFileSection({
                 onDraftCommentChange={onDraftCommentChange}
                 onReply={onReply}
                 onResolve={onResolve}
+                onSelectThread={onSelectThread}
+                selectedThreadId={selectedThreadId}
               />
             )}
             renderGutterUtility={(getHoveredLine) => (
@@ -1129,6 +1845,8 @@ function DiffLineAnnotationPanel({
   onDraftCommentChange,
   onReply,
   onResolve,
+  onSelectThread,
+  selectedThreadId,
 }: {
   actionError?: string;
   annotation: DiffLineAnnotation<ReviewLineAnnotation>;
@@ -1139,6 +1857,8 @@ function DiffLineAnnotationPanel({
   onDraftCommentChange(value: string): void;
   onReply(threadId: string, body: string): Promise<void>;
   onResolve(threadId: string): Promise<void>;
+  onSelectThread(threadId: string): void;
+  selectedThreadId?: string;
 }) {
   if (annotation.metadata.kind === "draft") {
     return (
@@ -1152,6 +1872,12 @@ function DiffLineAnnotationPanel({
         <textarea
           aria-label={`New review comment on ${file.path} line ${annotation.lineNumber}`}
           onChange={(event) => onDraftCommentChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (isSubmitShortcut(event) && draftComment.trim() !== "") {
+              event.preventDefault();
+              void onCreateThread(file);
+            }
+          }}
           placeholder="Leave a review comment"
           value={draftComment}
         />
@@ -1171,22 +1897,38 @@ function DiffLineAnnotationPanel({
     );
   }
 
-  return <ThreadCard onReply={onReply} onResolve={onResolve} thread={annotation.metadata.thread} />;
+  return (
+    <ThreadCard
+      onReply={onReply}
+      onResolve={onResolve}
+      onSelect={onSelectThread}
+      selected={annotation.metadata.thread.id === selectedThreadId}
+      thread={annotation.metadata.thread}
+    />
+  );
 }
 
 function ThreadCard({
   onReply,
   onResolve,
+  onSelect,
+  selected,
   thread,
 }: {
   onReply(threadId: string, body: string): Promise<void>;
   onResolve(threadId: string): Promise<void>;
+  onSelect(threadId: string): void;
+  selected: boolean;
   thread: ReviewThread;
 }) {
   const [replyDraft, setReplyDraft] = useState("");
 
   return (
-    <article className="thread">
+    <article
+      className={`thread ${selected ? "selected" : ""}`}
+      id={threadSectionId(thread.id)}
+      onClick={() => onSelect(thread.id)}
+    >
       <div className="thread-anchor">
         {thread.anchor.status !== "current" ? (
           <CircleAlert size={14} />
@@ -1226,6 +1968,14 @@ function ThreadCard({
           <input
             aria-label="Reply"
             onChange={(event) => setReplyDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (isSubmitShortcut(event) && replyDraft.trim() !== "") {
+                event.preventDefault();
+                void onReply(thread.id, replyDraft).then(() => {
+                  setReplyDraft("");
+                });
+              }
+            }}
             placeholder="Reply"
             value={replyDraft}
           />
@@ -1299,6 +2049,8 @@ type CommentTarget = {
 
 type ThreadAnchorMode = "file" | "selected-line";
 
+type KeyboardBindingStyle = "github" | "vscode";
+
 type DiffViewerOptions = {
   backgrounds: boolean;
   diffStyle: "unified" | "split";
@@ -1325,6 +2077,56 @@ type TokenHover = {
   text: string;
   x: number;
   y: number;
+};
+
+type ReviewTone = "danger" | "info" | "muted" | "success" | "warning";
+
+type ReviewNavigationTarget =
+  | {
+      path: string;
+      type: "file";
+    }
+  | {
+      path: string;
+      threadId: string;
+      type: "thread";
+    };
+
+type ReviewReadinessState =
+  | "blocked"
+  | "limited"
+  | "ready"
+  | "waiting-on-author"
+  | "waiting-on-review";
+
+type ReviewReadinessItem = {
+  detail: string;
+  id: string;
+  label: string;
+  target?: ReviewNavigationTarget;
+};
+
+type ReviewReadiness = {
+  blockers: ReviewReadinessItem[];
+  detail: string;
+  label: string;
+  satisfied: ReviewReadinessItem[];
+  state: ReviewReadinessState;
+  tone: ReviewTone;
+};
+
+type ReviewChip = {
+  id: string;
+  label: string;
+  target?: ReviewNavigationTarget;
+  tone: ReviewTone;
+  value: string;
+};
+
+type ReviewModel = {
+  chips: ReviewChip[];
+  firstActionTarget?: ReviewNavigationTarget;
+  readiness: ReviewReadiness;
 };
 
 function setCommentTargetFromRange(
@@ -1412,6 +2214,145 @@ function getPatchLineText(
   }
 
   return "";
+}
+
+function createFileTarget(path: string): ReviewNavigationTarget {
+  return {
+    path,
+    type: "file",
+  };
+}
+
+function createThreadTarget(thread: ReviewThread): ReviewNavigationTarget | undefined {
+  const path = thread.anchor.currentPath ?? thread.anchor.originalPath;
+  if (path === "") {
+    return undefined;
+  }
+
+  return {
+    path,
+    threadId: thread.id,
+    type: "thread",
+  };
+}
+
+function buildReviewIssueTargets(snapshot: ReviewSnapshot): ReviewNavigationTarget[] {
+  const targets: ReviewNavigationTarget[] = [];
+
+  for (const file of snapshot.files) {
+    targets.push(
+      ...snapshot.threads
+        .filter(
+          (thread) =>
+            thread.status === "open" &&
+            (thread.anchor.currentPath === file.path || thread.anchor.originalPath === file.path),
+        )
+        .toSorted(
+          (left, right) =>
+            (left.anchor.currentLine ?? left.anchor.originalLine) -
+            (right.anchor.currentLine ?? right.anchor.originalLine),
+        )
+        .map(createThreadTarget)
+        .filter(isDefined),
+    );
+
+    if (file.markState !== "current" && snapshot.capabilities.mode === "indexed") {
+      targets.push(createFileTarget(file.path));
+    }
+  }
+
+  return targets;
+}
+
+function getCurrentReviewTargetIndex(
+  targets: ReviewNavigationTarget[],
+  selectedIssueKey: string | undefined,
+  selectedThreadId: string | undefined,
+): number {
+  const issueIndex = targets.findIndex((target) => reviewTargetKey(target) === selectedIssueKey);
+  if (issueIndex !== -1) {
+    return issueIndex;
+  }
+
+  const threadIndex = targets.findIndex(
+    (target) => target.type === "thread" && target.threadId === selectedThreadId,
+  );
+  if (threadIndex !== -1) {
+    return threadIndex;
+  }
+
+  return -1;
+}
+
+function reviewTargetKey(target: ReviewNavigationTarget): string {
+  return target.type === "thread" ? `thread:${target.threadId}` : `file:${target.path}`;
+}
+
+function wrapIndex(index: number, length: number): number {
+  return ((index % length) + length) % length;
+}
+
+function getAttentionSummary(snapshot: ReviewSnapshot, showTurnState: boolean): string {
+  if (!showTurnState) {
+    return snapshot.capabilities.mode === "public" ? "Attention limited" : "Attention unavailable";
+  }
+
+  if (snapshot.attention.isViewerTurn) {
+    return "Your turn";
+  }
+
+  if (snapshot.attention.members.length === 0) {
+    return "No active turn";
+  }
+
+  const names = snapshot.attention.members
+    .slice(0, 2)
+    .map((member) => `@${member.login}`)
+    .join(", ");
+  return snapshot.attention.members.length > 2
+    ? `Waiting on ${names} +${snapshot.attention.members.length - 2}`
+    : `Waiting on ${names}`;
+}
+
+function getAttentionDetail(snapshot: ReviewSnapshot, showTurnState: boolean): string {
+  if (!showTurnState) {
+    return snapshot.capabilities.limitations[0] ?? "Sign in and use an indexed PR to manage turns.";
+  }
+
+  if (snapshot.attention.members.length === 0) {
+    return "No one is currently expected to act.";
+  }
+
+  return snapshot.attention.members.map((member) => member.reason).join(", ");
+}
+
+function isOlderThanHours(value: string, hours: number): boolean {
+  const timestamp = Date.parse(value);
+  return !Number.isNaN(timestamp) && Date.now() - timestamp > hours * 60 * 60 * 1000;
+}
+
+function isSubmitShortcut(event: ReactKeyboardEvent): boolean {
+  return event.key === "Enter" && (event.metaKey || event.ctrlKey);
+}
+
+function getViewedShortcutTitle(keyBindingStyle: KeyboardBindingStyle): string {
+  return keyBindingStyle === "vscode"
+    ? "Mark this file as reviewed (Ctrl/Cmd+K, V)"
+    : "Mark this file as reviewed (V)";
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement
+    ? target.closest("input, textarea, select, [contenteditable='true']") !== null
+    : false;
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined;
+}
+
+function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
+  return count === 1 ? singular : pluralForm;
 }
 
 function StatusPill({ label, tone }: { label: string; tone: "cool" | "hot" | "muted" }) {
@@ -1538,6 +2479,15 @@ function writeLocalPreference(key: string, value: string): void {
   } catch {
     return;
   }
+}
+
+function readKeyboardBindingStyle(): KeyboardBindingStyle {
+  const value = readLocalPreference("clearance.keyBindingStyle");
+  return isKeyboardBindingStyle(value) ? value : "vscode";
+}
+
+function isKeyboardBindingStyle(value: unknown): value is KeyboardBindingStyle {
+  return value === "github" || value === "vscode";
 }
 
 function readDiffOptions(): DiffViewerOptions {

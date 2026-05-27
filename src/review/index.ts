@@ -20,6 +20,8 @@ export type {
   ReviewSnapshot,
   ReviewSnapshotCapabilities,
   ReviewSnapshotMode,
+  ReviewRequirementSummary,
+  ReviewStateSummary,
   ReviewThread,
   ReviewThreadStatus,
   ReviewUser,

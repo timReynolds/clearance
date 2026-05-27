@@ -207,6 +207,11 @@ function buildPublicReviewSnapshot(
       state: getPublicPullRequestState(pullRequest),
       title: pullRequest.title,
     },
+    reviewState: {
+      dryRun: false,
+      requirements: [],
+      warnings: [],
+    },
     threads: buildPublicReviewThreads(comments),
     viewer: viewerLogin === undefined ? undefined : { login: viewerLogin },
   };
