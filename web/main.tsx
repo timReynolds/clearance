@@ -26,10 +26,13 @@ import {
   LogIn,
   LogOut,
   MessageSquare,
+  Monitor,
+  Moon,
   RefreshCw,
   Search,
   Send,
   SlidersHorizontal,
+  Sun,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -39,6 +42,7 @@ import type { ReviewFile, ReviewSnapshot, ReviewThread } from "../src/review/typ
 import "./styles.css";
 
 const defaultViewerLogin = readLocalPreference("clearance.viewer") ?? "tim";
+const defaultColorMode: ColorMode = "system";
 const defaultDiffOptions: DiffViewerOptions = {
   backgrounds: true,
   diffStyle: "unified",
@@ -65,6 +69,7 @@ function App() {
   const [selectedIssueKey, setSelectedIssueKey] = useState<string | undefined>();
   const [passTarget, setPassTarget] = useState("");
   const [actionError, setActionError] = useState<string | undefined>();
+  const [colorMode, setColorMode] = useState(readColorMode);
   const [diffOptions, setDiffOptions] = useState(readDiffOptions);
   const [keyBindingStyle, setKeyBindingStyle] =
     useState<KeyboardBindingStyle>(readKeyboardBindingStyle);
@@ -88,6 +93,20 @@ function App() {
   useEffect(() => {
     writeLocalPreference("clearance.keyBindingStyle", keyBindingStyle);
   }, [keyBindingStyle]);
+
+  useEffect(() => {
+    applyColorMode(colorMode);
+    writeLocalPreference("clearance.colorMode", colorMode);
+
+    if (colorMode !== "system" || typeof window.matchMedia !== "function") {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    const handleSystemColorModeChange = () => applyColorMode("system");
+    mediaQuery.addEventListener("change", handleSystemColorModeChange);
+    return () => mediaQuery.removeEventListener("change", handleSystemColorModeChange);
+  }, [colorMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -484,6 +503,7 @@ function App() {
             <span>{snapshot.pullRequest.title}</span>
           </div>
           <div className="top-actions">
+            <ColorModeControl mode={colorMode} onChange={setColorMode} />
             <a className="github-open" href={snapshot.pullRequest.htmlUrl}>
               <Github size={16} />
               <span>Open in GitHub</span>
@@ -625,6 +645,7 @@ function App() {
                 <ReviewFileSection
                   actionError={file.path === selectedPath ? actionError : undefined}
                   canMarkReviewed={canMarkReviewed}
+                  colorMode={colorMode}
                   commentTarget={commentTarget}
                   diffOptions={diffOptions}
                   draftComment={draftComments[file.path] ?? ""}
@@ -1216,6 +1237,41 @@ function ReviewKeyboardController({
   return null;
 }
 
+function ColorModeControl({
+  mode,
+  onChange,
+}: {
+  mode: ColorMode;
+  onChange(mode: ColorMode): void;
+}) {
+  const options = [
+    { Icon: Monitor, label: "System", value: "system" },
+    { Icon: Sun, label: "Light", value: "light" },
+    { Icon: Moon, label: "Dark", value: "dark" },
+  ] as const;
+
+  return (
+    <div aria-label="Color mode" className="color-mode-control" role="radiogroup">
+      {options.map((option) => (
+        <Tooltip key={option.value}>
+          <TooltipTrigger
+            aria-checked={option.value === mode}
+            aria-label={`${option.label} color mode`}
+            className={option.value === mode ? "active" : ""}
+            onClick={() => onChange(option.value)}
+            role="radio"
+            type="button"
+          >
+            <option.Icon size={14} />
+            <span className="sr-only">{option.label}</span>
+          </TooltipTrigger>
+          <TooltipContent sideOffset={6}>{option.label}</TooltipContent>
+        </Tooltip>
+      ))}
+    </div>
+  );
+}
+
 type FileThreadStats = {
   commentCount: number;
   openThreadCount: number;
@@ -1551,6 +1607,7 @@ function buildReadiness(input: {
 function ReviewFileSection({
   actionError,
   canMarkReviewed,
+  colorMode,
   commentTarget,
   diffOptions,
   draftComment,
@@ -1572,6 +1629,7 @@ function ReviewFileSection({
 }: {
   actionError?: string;
   canMarkReviewed: boolean;
+  colorMode: ColorMode;
   commentTarget?: CommentTarget;
   diffOptions: DiffViewerOptions;
   draftComment: string;
@@ -1695,6 +1753,7 @@ function ReviewFileSection({
                 dark: "pierre-dark",
                 light: "pierre-light",
               },
+              themeType: colorMode,
               useTokenTransformer: true,
             }}
             patch={file.patch}
@@ -1944,7 +2003,7 @@ function ThreadCard({
       {thread.comments.map((comment) => (
         <div className="comment" key={comment.id}>
           <Avatar avatarUrl={comment.author.avatarUrl} login={comment.author.login} />
-          <div>
+          <div className="comment-content">
             <div className="comment-head">
               <strong>{comment.author.login}</strong>
               <span>{formatRelative(comment.createdAt)}</span>
@@ -1959,7 +2018,7 @@ function ThreadCard({
               )}
               {comment.newSinceLastVisit ? <b>new</b> : null}
             </div>
-            <p>{comment.body}</p>
+            <p className="comment-body">{comment.body}</p>
           </div>
         </div>
       ))}
@@ -2050,6 +2109,8 @@ type CommentTarget = {
 type ThreadAnchorMode = "file" | "selected-line";
 
 type KeyboardBindingStyle = "github" | "vscode";
+
+type ColorMode = "dark" | "light" | "system";
 
 type DiffViewerOptions = {
   backgrounds: boolean;
@@ -2490,6 +2551,32 @@ function isKeyboardBindingStyle(value: unknown): value is KeyboardBindingStyle {
   return value === "github" || value === "vscode";
 }
 
+function applyColorMode(mode: ColorMode): void {
+  document.documentElement.dataset.colorMode = mode;
+  document.documentElement.classList.toggle("dark", shouldUseDarkColorMode(mode));
+}
+
+function shouldUseDarkColorMode(mode: ColorMode): boolean {
+  if (mode === "dark") {
+    return true;
+  }
+
+  return (
+    mode === "system" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches
+  );
+}
+
+function readColorMode(): ColorMode {
+  const rawValue = readLocalPreference("clearance.colorMode");
+  return isColorMode(rawValue) ? rawValue : defaultColorMode;
+}
+
+function isColorMode(value: unknown): value is ColorMode {
+  return value === "dark" || value === "light" || value === "system";
+}
+
 function readDiffOptions(): DiffViewerOptions {
   const rawValue = readLocalPreference("clearance.diffOptions");
   if (rawValue === undefined) {
@@ -2586,4 +2673,5 @@ type MeResponse = {
 
 type ReviewEvent = "APPROVE" | "COMMENT" | "REQUEST_CHANGES";
 
+applyColorMode(readColorMode());
 createRoot(document.querySelector("#root") as HTMLElement).render(<App />);

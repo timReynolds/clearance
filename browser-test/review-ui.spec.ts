@@ -52,6 +52,71 @@ test("applies the compact code-first shadcn theme tokens", async ({ page }) => {
   expect(theme.radius).toBe("0.45rem");
 });
 
+test("persists color mode choices through the shadcn tooltip control", async ({ page }) => {
+  await mockReviewApi(page);
+  await page.goto("/review/acme/repo/pull/1");
+
+  await page.getByRole("radio", { name: "Dark color mode" }).click();
+
+  await expect(page.locator("html")).toHaveAttribute("data-color-mode", "dark");
+  await expect(page.locator("html")).toHaveClass(/dark/);
+  await expect
+    .poll(() => page.evaluate(() => window.localStorage.getItem("clearance.colorMode")))
+    .toBe("dark");
+
+  await page.reload();
+
+  await expect(page.locator("html")).toHaveAttribute("data-color-mode", "dark");
+  await expect(page.getByRole("radio", { name: "Dark color mode" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+});
+
+test("wraps long review comments without overflowing the thread", async ({ page }) => {
+  await mockReviewApi(page);
+  await page.goto("/review/acme/repo/pull/1");
+
+  const commentBody = page.locator(".comment-body", {
+    hasText: "THIS_IS_A_REALLY_LONG_IDENTIFIER",
+  });
+  await expect(commentBody).toBeVisible();
+
+  const metrics = await commentBody.evaluate((element) => {
+    const styles = window.getComputedStyle(element);
+
+    return {
+      clientWidth: element.clientWidth,
+      overflowWrap: styles.overflowWrap,
+      scrollWidth: element.scrollWidth,
+      whiteSpace: styles.whiteSpace,
+    };
+  });
+
+  expect(metrics.whiteSpace).toBe("pre-wrap");
+  expect(metrics.overflowWrap).toBe("anywhere");
+  expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth + 1);
+});
+
+test("keeps core review chrome spacing compact", async ({ page }) => {
+  await mockReviewApi(page);
+  await page.goto("/review/acme/repo/pull/1");
+
+  const metrics = await page.evaluate(() => ({
+    diffToolbar: document.querySelector(".diff-toolbar")?.getBoundingClientRect().height ?? 0,
+    fileHeader: document.querySelector(".file-header")?.getBoundingClientRect().height ?? 0,
+    fileRow: document.querySelector(".file-table tbody tr")?.getBoundingClientRect().height ?? 0,
+    statebar: document.querySelector(".statebar")?.getBoundingClientRect().height ?? 0,
+    topbar: document.querySelector(".topbar")?.getBoundingClientRect().height ?? 0,
+  }));
+
+  expect(metrics.topbar).toBeLessThanOrEqual(64);
+  expect(metrics.statebar).toBeLessThanOrEqual(48);
+  expect(metrics.diffToolbar).toBeLessThanOrEqual(48);
+  expect(metrics.fileRow).toBeLessThanOrEqual(36);
+  expect(metrics.fileHeader).toBeLessThanOrEqual(64);
+});
+
 test("filters the changed file list", async ({ page }) => {
   await mockReviewApi(page);
   await page.goto("/review/acme/repo/pull/1");
@@ -330,6 +395,14 @@ const reviewSnapshot: ReviewSnapshot = {
       additions: 8,
       deletions: 2,
       markState: "unreviewed",
+      patch: `diff --git a/web/main.tsx b/web/main.tsx
+index 1111111..2222222 100644
+--- a/web/main.tsx
++++ b/web/main.tsx
+@@ -1,2 +1,3 @@
+ import { createRoot } from "react-dom/client";
++const title = "Use shadcn with Base UI";
+ import "./styles.css";`,
       path: "web/main.tsx",
       status: "modified",
     },
@@ -386,7 +459,44 @@ const reviewSnapshot: ReviewSnapshot = {
     ],
     warnings: [],
   },
-  threads: [],
+  threads: [
+    {
+      anchor: {
+        confidence: 1,
+        currentLine: 2,
+        currentPatchsetNumber: 2,
+        currentPath: "web/main.tsx",
+        originalLine: 2,
+        originalPatchsetNumber: 2,
+        originalPath: "web/main.tsx",
+        side: "RIGHT",
+        sourceText: 'const title = "Use shadcn with Base UI";',
+        status: "current",
+      },
+      comments: [
+        {
+          author: {
+            login: "maya",
+          },
+          body: `The comment layout should preserve this line break.
+
+This long URL should wrap instead of pushing the panel sideways: https://github.com/acme/repo/pull/1/files/very/deep/path/with/a/comment/thread/that/keeps/going?query=spacing-and-color-mode-review
+
+Long token: THIS_IS_A_REALLY_LONG_IDENTIFIER_WITH_NO_BREAKS_TO_CONFIRM_COMMENT_TEXT_WRAPS_CLEANLY_ON_DESKTOP.`,
+          createdAt: "2026-05-27T09:35:00.000Z",
+          githubUrl: "https://github.com/acme/repo/pull/1#discussion_r1",
+          id: "comment-1",
+          mirroredToGithub: true,
+          newSinceLastVisit: true,
+        },
+      ],
+      id: "thread-1",
+      owner: {
+        login: "maya",
+      },
+      status: "open",
+    },
+  ],
   viewer: {
     avatarUrl: "https://example.test/tim.png",
     login: "tim",
