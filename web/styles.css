@@ -1,18 +1,65 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/jetbrains-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-heading: var(--font-code);
+  --font-mono: var(--font-code);
+  --font-sans: var(--font-code);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
 :root {
   color-scheme: light dark;
-  font-family:
-    Inter,
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  font-family: var(--font-code);
   background: #f7f7f7;
   color: #1d1d1d;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 
+  --font-code:
+    "JetBrains Mono Variable", "SFMono-Regular", "Cascadia Code", "Liberation Mono", Menlo,
+    Consolas, monospace;
   --bg: #f7f7f7;
   --surface: #ffffff;
   --surface-raised: #fafafa;
@@ -21,7 +68,7 @@
   --border-strong: #d4d4d4;
   --text: #303030;
   --text-strong: #1d1d1d;
-  --muted: #737373;
+  --text-muted: #737373;
   --muted-soft: #8a8a8a;
   --accent: #0077bf;
   --accent-hover: #006aa8;
@@ -59,6 +106,37 @@
   --diff-separator-bg: #ededed;
   --diff-hover-bg: #cfeaff;
   --shadow-soft: 0 1px 2px rgb(15 23 42 / 0.06), 0 10px 28px rgb(15 23 42 / 0.06);
+
+  --background: var(--bg);
+  --foreground: var(--text);
+  --card: var(--surface);
+  --card-foreground: var(--text);
+  --popover: var(--surface);
+  --popover-foreground: var(--text);
+  --primary: var(--accent);
+  --primary-foreground: var(--primary-text);
+  --secondary: var(--surface-subtle);
+  --secondary-foreground: var(--text);
+  --muted: var(--surface-subtle);
+  --muted-foreground: var(--text-muted);
+  --accent-foreground: var(--primary-text);
+  --destructive: var(--danger);
+  --input: var(--border);
+  --ring: var(--accent-border);
+  --chart-1: var(--accent);
+  --chart-2: var(--success);
+  --chart-3: var(--attention);
+  --chart-4: var(--danger);
+  --chart-5: var(--muted-soft);
+  --radius: 0.45rem;
+  --sidebar: var(--surface);
+  --sidebar-foreground: var(--text);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--surface-subtle);
+  --sidebar-accent-foreground: var(--text);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -74,7 +152,7 @@
     --border-strong: #363636;
     --text: #d4d4d4;
     --text-strong: #f5f5f5;
-    --muted: #8a8a8a;
+    --text-muted: #8a8a8a;
     --muted-soft: #636363;
     --accent: #69b1ff;
     --accent-hover: #8ac3ff;
@@ -115,6 +193,20 @@
   }
 }
 
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    @apply font-sans;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -138,7 +230,7 @@ a {
 
 .boot {
   align-items: center;
-  color: var(--muted);
+  color: var(--text-muted);
   display: flex;
   gap: 10px;
   height: 100vh;
@@ -199,7 +291,7 @@ a {
 }
 
 .pr-title {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 13px;
   gap: 8px;
   min-width: 0;
@@ -285,7 +377,7 @@ a {
 }
 
 .account-heading span {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 12px;
 }
 
@@ -332,8 +424,8 @@ a {
 .icon-button:hover,
 .review-button:hover,
 .file-comment-button:hover,
-.state-actions button:hover,
-.thread-actions button:hover {
+.state-actions button:not([data-slot="button"]):hover,
+.thread-actions button:not([data-slot="button"]):hover {
   border-color: var(--border-strong);
 }
 
@@ -346,8 +438,8 @@ a {
 .file-comment-button,
 .primary-button,
 .review-button,
-.state-actions button,
-.thread-actions button {
+.state-actions button:not([data-slot="button"]),
+.thread-actions button:not([data-slot="button"]) {
   align-items: center;
   border-radius: 7px;
   cursor: pointer;
@@ -360,7 +452,7 @@ a {
 .icon-button {
   background: var(--surface-raised);
   border: 1px solid var(--border);
-  color: var(--muted);
+  color: var(--text-muted);
   width: 34px;
 }
 
@@ -402,7 +494,7 @@ button:disabled {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 999px;
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 11px;
   line-height: 20px;
   padding: 0 8px;
@@ -422,11 +514,11 @@ button:disabled {
 
 .status-pill.muted {
   background: var(--status-muted-bg);
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 .state-meta {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 11px;
 }
 
@@ -442,7 +534,7 @@ button:disabled {
   margin-left: auto;
 }
 
-.state-actions button {
+.state-actions button:not([data-slot="button"]) {
   background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text);
@@ -452,7 +544,7 @@ button:disabled {
 
 .turn-indicator {
   align-items: center;
-  color: var(--muted);
+  color: var(--text-muted);
   display: inline-flex;
   font-size: 11px;
   gap: 6px;
@@ -548,7 +640,7 @@ button:disabled {
 }
 
 .pass-popover label {
-  color: var(--muted);
+  color: var(--text-muted);
   display: grid;
   font-size: 12px;
   gap: 5px;
@@ -596,7 +688,7 @@ button:disabled {
 }
 
 .diff-toolbar-title span {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 12px;
 }
 
@@ -619,7 +711,7 @@ button:disabled {
 .diff-options-popover legend,
 .select-setting span,
 .toggle-setting span {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 12px;
 }
 
@@ -638,7 +730,7 @@ button:disabled {
   background: transparent;
   border: 0;
   border-radius: 5px;
-  color: var(--muted);
+  color: var(--text-muted);
   cursor: pointer;
   min-height: 30px;
 }
@@ -679,7 +771,7 @@ button:disabled {
 }
 
 .toggle-setting input::before {
-  background: var(--muted);
+  background: var(--text-muted);
   border-radius: 50%;
   content: "";
   height: 18px;
@@ -719,7 +811,7 @@ button:disabled {
 .file-filter {
   background: var(--translucent-surface);
   border-bottom: 1px solid var(--border);
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 12px;
   gap: 7px;
   min-height: 36px;
@@ -767,7 +859,7 @@ button:disabled {
 .file-table th {
   background: var(--surface-raised);
   border-bottom: 1px solid var(--border);
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 11px;
   font-weight: 750;
   height: 28px;
@@ -817,7 +909,7 @@ button:disabled {
   align-items: center;
   border: 1px solid var(--border-strong);
   border-radius: 4px;
-  color: var(--muted);
+  color: var(--text-muted);
   display: inline-flex;
   flex: 0 0 auto;
   font-size: 10px;
@@ -899,7 +991,7 @@ button:disabled {
 }
 
 .empty-file-list {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 12px;
   padding: 10px 14px;
 }
@@ -919,7 +1011,7 @@ button:disabled {
 }
 
 .rail-label {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 11px;
   font-weight: 750;
   gap: 8px;
@@ -978,7 +1070,7 @@ button:disabled {
 }
 
 .patchset small {
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 .patchset.force {
@@ -1055,7 +1147,7 @@ button:disabled {
 .file-comment-button {
   background: transparent;
   border: 1px solid var(--border-strong);
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 12px;
   list-style: none;
   min-height: 34px;
@@ -1121,7 +1213,7 @@ button:disabled {
   background: transparent;
   border: 1px solid var(--border-strong);
   border-radius: 9px;
-  color: var(--muted);
+  color: var(--text-muted);
   cursor: pointer;
   display: inline-flex;
   gap: 7px;
@@ -1130,7 +1222,7 @@ button:disabled {
 }
 
 .viewed-button span {
-  border: 2px solid var(--muted);
+  border: 2px solid var(--text-muted);
   border-radius: 6px;
   height: 20px;
   position: relative;
@@ -1165,10 +1257,8 @@ button:disabled {
 }
 
 .diff-scroll diffs-container {
-  --diffs-font-family:
-    "SFMono-Regular", "Cascadia Code", "Liberation Mono", Menlo, Consolas, monospace;
-  --diffs-header-font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --diffs-font-family: var(--font-code);
+  --diffs-header-font-family: var(--font-code);
   --diffs-font-size: 12.5px;
   --diffs-line-height: 21px;
   --diffs-bg-context-override: var(--diff-context-bg);
@@ -1182,7 +1272,7 @@ button:disabled {
 
 .no-patch,
 .empty-state {
-  color: var(--muted);
+  color: var(--text-muted);
   margin: 24px;
 }
 
@@ -1295,7 +1385,7 @@ button:disabled {
 }
 
 .thread-anchor {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 12px;
   gap: 7px;
   margin-bottom: 12px;
@@ -1339,7 +1429,7 @@ img.avatar {
 }
 
 .comment-head {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 12px;
   gap: 8px;
 }
@@ -1388,7 +1478,7 @@ img.avatar {
   padding: 0 10px;
 }
 
-.thread-actions button,
+.thread-actions button:not([data-slot="button"]),
 .state-pass button {
   background: var(--surface);
   border: 1px solid var(--border);

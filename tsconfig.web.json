@@ -12,6 +12,9 @@
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
     "noUncheckedIndexedAccess": true,
+    "paths": {
+      "@/*": ["./web/*"]
+    },
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "strict": true,

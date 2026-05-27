@@ -7,7 +7,6 @@ import type {
   LineDiffTypes,
   SelectedLineRange,
 } from "@pierre/diffs";
-import { Tooltip } from "@base-ui/react/tooltip";
 import {
   Check,
   ChevronDown,
@@ -25,6 +24,8 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ReviewFile, ReviewSnapshot, ReviewThread } from "../src/review/types";
 // oxlint-disable-next-line import/no-unassigned-import
 import "./styles.css";
@@ -368,7 +369,7 @@ function App() {
   }
 
   return (
-    <Tooltip.Provider>
+    <TooltipProvider>
       <div className="app-shell">
         <header className="topbar">
           <div className="brand">
@@ -452,18 +453,36 @@ function App() {
                     value={reviewBody}
                   />
                   <div className="review-options">
-                    <button onClick={() => void submitReview("COMMENT")}>
+                    <Button
+                      className="justify-start"
+                      onClick={() => void submitReview("COMMENT")}
+                      size="sm"
+                      type="button"
+                      variant="ghost"
+                    >
                       <MessageSquare size={15} />
                       Comment
-                    </button>
-                    <button onClick={() => void submitReview("APPROVE")}>
+                    </Button>
+                    <Button
+                      className="justify-start"
+                      onClick={() => void submitReview("APPROVE")}
+                      size="sm"
+                      type="button"
+                      variant="secondary"
+                    >
                       <Check size={15} />
                       Approve
-                    </button>
-                    <button onClick={() => void submitReview("REQUEST_CHANGES")}>
+                    </Button>
+                    <Button
+                      className="justify-start"
+                      onClick={() => void submitReview("REQUEST_CHANGES")}
+                      size="sm"
+                      type="button"
+                      variant="destructive"
+                    >
                       <CircleAlert size={15} />
                       Request changes
-                    </button>
+                    </Button>
                   </div>
                 </div>
               </details>
@@ -483,10 +502,10 @@ function App() {
                       value={passTarget}
                     />
                   </label>
-                  <button onClick={() => void passAttention()}>
+                  <Button onClick={() => void passAttention()} size="sm" type="button">
                     <Send size={15} />
                     Pass
-                  </button>
+                  </Button>
                 </div>
               </details>
             </div>
@@ -542,7 +561,7 @@ function App() {
         </div>
         {tokenHover === undefined ? null : <TokenHoverCard hover={tokenHover} />}
       </div>
-    </Tooltip.Provider>
+    </TooltipProvider>
   );
 }
 
@@ -901,15 +920,15 @@ function ReviewFileSection({
                 {actionError === undefined ? null : (
                   <span className="action-error">{actionError}</span>
                 )}
-                <button
-                  className="primary-button"
+                <Button
                   disabled={draftComment.trim() === ""}
                   onClick={() => void onCreateThread(file, "file")}
+                  size="sm"
                   type="button"
                 >
                   <MessageSquare size={15} />
                   Comment
-                </button>
+                </Button>
               </div>
             </div>
           </details>
@@ -1065,8 +1084,8 @@ function PatchsetRail({
       </div>
       <div className="rail-track">
         {snapshot.patchsets.map((patchset) => (
-          <Tooltip.Root key={patchset.patchsetNumber}>
-            <Tooltip.Trigger
+          <Tooltip key={patchset.patchsetNumber}>
+            <TooltipTrigger
               className={[
                 "patchset",
                 patchset.forcePush ? "force" : "",
@@ -1084,19 +1103,16 @@ function PatchsetRail({
                 );
                 onSelectComparison(nextFromPatchset, nextToPatchset);
               }}
+              type="button"
             >
               <span>PS {patchset.patchsetNumber}</span>
               <small>{patchset.headSha.slice(0, 7)}</small>
-            </Tooltip.Trigger>
-            <Tooltip.Portal>
-              <Tooltip.Positioner sideOffset={6}>
-                <Tooltip.Popup className="tooltip">
-                  {patchset.eventType}
-                  {patchset.forcePush ? " · force-push" : ""}
-                </Tooltip.Popup>
-              </Tooltip.Positioner>
-            </Tooltip.Portal>
-          </Tooltip.Root>
+            </TooltipTrigger>
+            <TooltipContent sideOffset={6}>
+              {patchset.eventType}
+              {patchset.forcePush ? " · force-push" : ""}
+            </TooltipContent>
+          </Tooltip>
         ))}
       </div>
     </section>
@@ -1141,14 +1157,15 @@ function DiffLineAnnotationPanel({
         />
         <div>
           {actionError === undefined ? null : <span className="action-error">{actionError}</span>}
-          <button
-            className="primary-button"
+          <Button
             disabled={draftComment.trim() === ""}
             onClick={() => void onCreateThread(file)}
+            size="sm"
+            type="button"
           >
             <MessageSquare size={15} />
             Comment
-          </button>
+          </Button>
         </div>
       </section>
     );
@@ -1212,19 +1229,27 @@ function ThreadCard({
             placeholder="Reply"
             value={replyDraft}
           />
-          <button
+          <Button
             onClick={() =>
               void onReply(thread.id, replyDraft).then(() => {
                 setReplyDraft("");
               })
             }
+            size="icon-sm"
+            type="button"
+            variant="outline"
           >
             <Send size={14} />
-          </button>
-          <button onClick={() => void onResolve(thread.id)}>
+          </Button>
+          <Button
+            onClick={() => void onResolve(thread.id)}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
             <Check size={14} />
             Resolve
-          </button>
+          </Button>
         </div>
       ) : null}
     </article>

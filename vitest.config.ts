@@ -7,5 +7,6 @@ export default defineConfig({
       reporter: ["text", "html"],
     },
     globals: true,
+    include: ["test/**/*.test.ts"],
   },
 });
