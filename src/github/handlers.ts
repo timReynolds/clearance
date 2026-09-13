@@ -7,14 +7,11 @@ import {
   listPullRequestReviewerSignals,
   loadOwnershipTree,
   parseReviewThreadMarker,
-  enqueueGithubOutboxJob,
-  githubOutboxJobTypes,
   resolveGithubIdentities,
   stripReviewThreadMarker,
   type CommitCompareOctokit,
   type GithubIdentityOctokit,
   type GithubStatusesOctokit,
-  type GithubOutboxStore,
   type NotificationCommentOctokit,
   type OwnershipTreeOctokit,
   type PullRequestFilesOctokit,
@@ -31,6 +28,10 @@ import {
 import type { ClearanceState } from "../state/index.js";
 import { parseOverrideCommentCommand } from "../override/index.js";
 import type { ReviewPatchsetInput, ReviewPullRequestRef } from "../review/index.js";
+import {
+  commitGithubReviewTransition,
+  type GithubReviewTransitionStore,
+} from "./review-transition.js";
 
 const pullRequestActions = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
 
@@ -66,14 +67,13 @@ export type GithubInstallationClientFactory = {
   getInstallationOctokit(installationId: number): Promise<GithubWorkflowOctokit>;
 };
 
-export type GithubHandlerStateStore = {
+export type GithubHandlerStateStore = GithubReviewTransitionStore & {
   beginWebhookDelivery(input: {
     action?: string;
     deliveryId: string;
     event: string;
     payload?: unknown;
   }): Promise<boolean>;
-  enqueueOutboxJob: GithubOutboxStore["enqueueOutboxJob"];
   loadPullRequestState(
     input: Pick<PullRequestWorkflowInput, "owner" | "pullNumber" | "repo">,
   ): Promise<ClearanceState | undefined>;
@@ -85,7 +85,6 @@ export type GithubHandlerStateStore = {
     payload?: unknown;
     status: "failed" | "processed" | "processing";
   }): Promise<void>;
-  savePullRequestState(input: PullRequestWorkflowInput, state: ClearanceState): Promise<void>;
 };
 
 export type GithubHandlerReviewStore = {
@@ -171,7 +170,6 @@ export function registerGithubHandlers(
         console.info(
           {
             checks: result.checks,
-            sideEffectFailures: result.sideEffectFailures,
             pullNumber,
             requestedReviewers: result.requestedReviewers,
             repository,
@@ -253,7 +251,6 @@ export function registerGithubHandlers(
         console.info(
           {
             checks: result.checks,
-            sideEffectFailures: result.sideEffectFailures,
             pullNumber: payload.pull_request.number,
             repository: payload.repository.full_name,
             reviewer,
@@ -408,7 +405,6 @@ export function registerGithubHandlers(
               command: command.type,
               pullNumber,
               repository,
-              sideEffectFailures: result.sideEffectFailures,
             },
             "processed override comment event",
           );
@@ -617,70 +613,9 @@ function buildWorkflowDependencies(
         ref: input.headSha,
         repo: input.repo,
       }),
-    requestReviewers: async (input, reviewers) => {
-      if (reviewers.length === 0) {
-        return;
-      }
-
-      await enqueueGithubOutboxJob(options.stateStore, {
-        payload: {
-          installationId,
-          owner: input.owner,
-          pullNumber: input.pullNumber,
-          repo: input.repo,
-          reviewers,
-        },
-        type: githubOutboxJobTypes.requestReviewers,
-      });
-    },
     resolveIdentities: async (tree) => resolveGithubIdentities(octokit, tree.files),
-    saveState: async (input, state) => {
-      await options.stateStore.savePullRequestState(input, state);
-    },
-    sendNotifications: async (input, notifications) => {
-      if (notifications.length === 0) {
-        return;
-      }
-
-      await enqueueGithubOutboxJob(options.stateStore, {
-        payload: {
-          installationId,
-          notifications,
-          owner: input.owner,
-          pullNumber: input.pullNumber,
-          repo: input.repo,
-        },
-        type: githubOutboxJobTypes.sendNotifications,
-      });
-    },
-    setStatuses: async (input, decisions) => {
-      if (decisions.length === 0) {
-        return;
-      }
-
-      await enqueueGithubOutboxJob(options.stateStore, {
-        payload: {
-          decisions,
-          installationId,
-          owner: input.owner,
-          repo: input.repo,
-          sha: input.headSha,
-        },
-        type: githubOutboxJobTypes.setStatuses,
-      });
-    },
-    upsertComment: async (input, body) => {
-      await enqueueGithubOutboxJob(options.stateStore, {
-        payload: {
-          body,
-          installationId,
-          owner: input.owner,
-          pullNumber: input.pullNumber,
-          repo: input.repo,
-        },
-        type: githubOutboxJobTypes.upsertComment,
-      });
-    },
+    commitTransition: (input, transition) =>
+      commitGithubReviewTransition(options.stateStore, input, installationId, transition),
   };
 }
 

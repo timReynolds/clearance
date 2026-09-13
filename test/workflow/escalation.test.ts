@@ -4,6 +4,7 @@ import {
   buildEscalationRequirementsFromState,
   processEscalationRun,
   type EscalationWorkflowDependencies,
+  type ReviewTransitionEffect,
 } from "../../src/workflow/index.js";
 import { createEmptyClearanceState } from "../../src/state/index.js";
 
@@ -55,17 +56,19 @@ describe("processEscalationRun", () => {
         type: "fallback",
       }),
     ]);
-    expect(dependencies.postComment).toHaveBeenCalledWith(
-      "Warn assigned reviewers for and:platform: @alice",
-    );
-    expect(dependencies.postComment).toHaveBeenCalledWith(
-      "Notify fallback team @org/leads for and:platform: @org/leads",
-    );
-    expect(dependencies.requestReviewers).toHaveBeenCalledWith(["bob"]);
-    expect(dependencies.upsertComment).toHaveBeenCalledWith(
-      expect.stringContaining("<!-- clearance-state:v1"),
-    );
-    expect(result.sideEffectFailures).toEqual([]);
+    expect(dependencies.effects).toContainEqual({
+      type: "post-comment",
+      body: "Warn assigned reviewers for and:platform: @alice",
+    });
+    expect(dependencies.effects).toContainEqual({
+      type: "post-comment",
+      body: "Notify fallback team @org/leads for and:platform: @org/leads",
+    });
+    expect(dependencies.effects).toContainEqual({ type: "request-reviewers", reviewers: ["bob"] });
+    expect(dependencies.effects).toContainEqual({
+      type: "upsert-comment",
+      body: expect.stringContaining("<!-- clearance-state:v1"),
+    });
   });
 
   it("does nothing when no escalation actions are due", async () => {
@@ -93,9 +96,11 @@ describe("processEscalationRun", () => {
     );
 
     expect(result.actions).toEqual([]);
-    expect(dependencies.postComment).not.toHaveBeenCalled();
-    expect(dependencies.requestReviewers).not.toHaveBeenCalled();
-    expect(dependencies.upsertComment).toHaveBeenCalledTimes(1);
+    expect(dependencies.effects.some((effect) => effect.type === "post-comment")).toBe(false);
+    expect(dependencies.effects.some((effect) => effect.type === "request-reviewers")).toBe(false);
+    expect(dependencies.effects.filter((effect) => effect.type === "upsert-comment")).toHaveLength(
+      1,
+    );
   });
 
   it("updates only the sticky comment in dry-run mode", async () => {
@@ -125,44 +130,12 @@ describe("processEscalationRun", () => {
 
     expect(result.actions).toEqual([]);
     expect(result.state.escalations).toEqual([]);
-    expect(dependencies.upsertComment).toHaveBeenCalledWith(
-      expect.stringContaining("Dry run mode is active."),
-    );
-    expect(dependencies.postComment).not.toHaveBeenCalled();
-    expect(dependencies.requestReviewers).not.toHaveBeenCalled();
-  });
-
-  it("returns side effect failures instead of throwing", async () => {
-    const dependencies = createDependencies();
-    dependencies.postComment = vi.fn<EscalationWorkflowDependencies["postComment"]>(async () => {
-      throw new Error("comment unavailable");
+    expect(dependencies.effects).toContainEqual({
+      type: "upsert-comment",
+      body: expect.stringContaining("Dry run mode is active."),
     });
-
-    const result = await processEscalationRun(
-      {
-        now: "2026-05-17T12:00:00.000Z",
-        requirements: [
-          {
-            assignedReviewers: ["alice"],
-            eligibleReviewers: ["alice"],
-            identity: "and:platform",
-            pendingSince: "2026-05-17T07:00:00.000Z",
-            status: "pending",
-            warnAfter: "1h",
-          },
-        ],
-        state: createEmptyClearanceState(),
-      },
-      dependencies,
-    );
-
-    expect(result.sideEffectFailures).toEqual([
-      {
-        message: "comment unavailable",
-        operation: "post-comment",
-      },
-    ]);
-    expect(dependencies.upsertComment).toHaveBeenCalled();
+    expect(dependencies.effects.some((effect) => effect.type === "post-comment")).toBe(false);
+    expect(dependencies.effects.some((effect) => effect.type === "request-reviewers")).toBe(false);
   });
 
   it("builds escalation requirements from persisted state", () => {
@@ -223,11 +196,16 @@ describe("processEscalationRun", () => {
   });
 });
 
-function createDependencies(): EscalationWorkflowDependencies {
-  return {
-    postComment: vi.fn<EscalationWorkflowDependencies["postComment"]>(async () => {}),
-    requestReviewers: vi.fn<EscalationWorkflowDependencies["requestReviewers"]>(async () => {}),
-    saveState: vi.fn<EscalationWorkflowDependencies["saveState"]>(async () => {}),
-    upsertComment: vi.fn<EscalationWorkflowDependencies["upsertComment"]>(async () => {}),
+function createDependencies(): EscalationWorkflowDependencies & {
+  effects: ReviewTransitionEffect[];
+} {
+  const dependencies: EscalationWorkflowDependencies & { effects: ReviewTransitionEffect[] } = {
+    effects: [],
+    commitTransition: vi.fn<EscalationWorkflowDependencies["commitTransition"]>(
+      async (transition) => {
+        dependencies.effects = transition.effects;
+      },
+    ),
   };
+  return dependencies;
 }

@@ -34,7 +34,12 @@ Covered areas:
 - `state`: hidden state parsing, rendering, review approvals, scoped invalidation.
 - `review`: GitHub-native review marker parsing, patchset/index projection, attention state, and
   file review marks.
-- `db`: persistence boundary behavior is covered through workflow tests; use Supabase local database checks when changing migrations or Drizzle schema.
+- `db`: durable review transitions use Drizzle with embedded PostgreSQL (PGlite). Tests inject SQL
+  constraint failures, verify rollback through stored state and claimed jobs, and retry PR changes,
+  submitted reviews, and escalation. The fixture applies the Clearance migration with native
+  `gen_random_uuid` in place of the Supabase `pgcrypto` wrapper; it does not verify Supabase hosting,
+  connection pooling, or concurrent workers. Use Supabase local database checks when changing
+  migrations or Drizzle schema.
 - `checks`: status decisions.
 - `escalation`: timing decisions.
 - `override`: break-glass authorization.
@@ -66,6 +71,7 @@ Covered areas:
 - invalid config behavior
 - scoped stale approval retention and invalidation
 - escalation action application
+- atomic acceptance of review state and outgoing GitHub job intent; failures remain retryable
 
 ### Webhook handler tests
 
@@ -87,4 +93,6 @@ Reference: [`@octokit/webhooks` README](https://github.com/octokit/webhooks.js#r
 - Include one success case and one unhappy path for each new adapter or workflow branch.
 - Prefer result values and diagnostics for expected operational failures.
 - Reserve thrown errors for programmer errors, test helpers, or truly unexpected runtime failures.
+  Durable review acceptance is an explicit exception: transaction failures propagate so webhook
+  deliveries are recorded as failed and escalation runs can retry without losing outgoing work.
 - Keep hidden sticky comment snapshot round-trip tests whenever the state shape changes.

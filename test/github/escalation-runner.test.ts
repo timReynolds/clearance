@@ -53,13 +53,12 @@ describe("runGithubEscalationSweep", () => {
         {
           actions: 2,
           pullNumber: 42,
-          sideEffectFailures: 0,
           status: "processed",
         },
       ],
       repository: "acme/clearance",
     });
-    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+    expect(stateStore.jobs).toContainEqual(
       expect.objectContaining({
         payload: expect.objectContaining({
           body: "Warn assigned reviewers for and:platform: @alice",
@@ -68,7 +67,7 @@ describe("runGithubEscalationSweep", () => {
         type: "github.post-comment",
       }),
     );
-    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+    expect(stateStore.jobs).toContainEqual(
       expect.objectContaining({
         payload: expect.objectContaining({
           reviewers: ["bob"],
@@ -76,7 +75,7 @@ describe("runGithubEscalationSweep", () => {
         type: "github.request-reviewers",
       }),
     );
-    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+    expect(stateStore.jobs).toContainEqual(
       expect.objectContaining({
         payload: expect.objectContaining({
           body: expect.stringContaining("<!-- clearance-state:v1"),
@@ -107,7 +106,7 @@ describe("runGithubEscalationSweep", () => {
         status: "skipped",
       },
     ]);
-    expect(stateStore.enqueueOutboxJob).not.toHaveBeenCalled();
+    expect(stateStore.jobs).toEqual([]);
   });
 
   it("saves updated stored Clearance state", async () => {
@@ -144,11 +143,10 @@ describe("runGithubEscalationSweep", () => {
       {
         actions: 1,
         pullNumber: 42,
-        sideEffectFailures: 0,
         status: "processed",
       },
     ]);
-    expect(stateStore.savePullRequestState).toHaveBeenCalledWith(
+    expect(stateStore.savePullRequestTransition).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: "acme",
         pullNumber: 42,
@@ -162,6 +160,7 @@ describe("runGithubEscalationSweep", () => {
           }),
         ],
       }),
+      expect.any(Array),
     );
   });
 
@@ -201,12 +200,11 @@ describe("runGithubEscalationSweep", () => {
       {
         actions: 0,
         pullNumber: 42,
-        sideEffectFailures: 0,
         status: "processed",
       },
     ]);
-    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledTimes(1);
-    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+    expect(stateStore.jobs).toHaveLength(1);
+    expect(stateStore.jobs).toContainEqual(
       expect.objectContaining({
         payload: expect.objectContaining({
           body: expect.stringContaining("Dry run mode is active."),
@@ -218,7 +216,7 @@ describe("runGithubEscalationSweep", () => {
 });
 
 type TestEscalationStateStore = GithubEscalationRunnerStateStore & {
-  jobs: Array<Parameters<GithubEscalationRunnerStateStore["enqueueOutboxJob"]>[0]>;
+  jobs: Parameters<GithubEscalationRunnerStateStore["savePullRequestTransition"]>[2];
   savedState?: ClearanceState;
 };
 
@@ -226,15 +224,13 @@ function createStateStore(initialState?: ClearanceState): TestEscalationStateSto
   const jobs: TestEscalationStateStore["jobs"] = [];
   let savedState = initialState;
   const store: TestEscalationStateStore = {
-    enqueueOutboxJob: vi.fn<GithubEscalationRunnerStateStore["enqueueOutboxJob"]>(async (job) => {
-      jobs.push(job);
-    }),
     jobs,
     loadPullRequestState: vi.fn<GithubEscalationRunnerStateStore["loadPullRequestState"]>(
       async () => savedState,
     ),
-    savePullRequestState: vi.fn<GithubEscalationRunnerStateStore["savePullRequestState"]>(
-      async (_input, state) => {
+    savePullRequestTransition: vi.fn<GithubEscalationRunnerStateStore["savePullRequestTransition"]>(
+      async (_input, state, acceptedJobs) => {
+        jobs.push(...acceptedJobs);
         savedState = state;
         store.savedState = state;
       },

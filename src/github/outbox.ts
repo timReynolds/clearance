@@ -1,5 +1,5 @@
 import type { CheckDecision } from "../checks/index.js";
-import type { OutboxJobInput, OutboxJobRecord } from "../db/index.js";
+import type { OutboxJobRecord } from "../db/index.js";
 import type { NotificationRecord } from "../resolution/index.js";
 import { sendPullRequestNotifications, type NotificationCommentOctokit } from "./notifications.js";
 import { requestPullRequestReviewers, type PullRequestReviewersOctokit } from "./reviewers.js";
@@ -20,10 +20,6 @@ export type GithubOutboxOctokit = GithubStatusesOctokit &
   NotificationCommentOctokit &
   PullRequestReviewersOctokit &
   StickyCommentOctokit;
-
-export type GithubOutboxStore = {
-  enqueueOutboxJob(input: OutboxJobInput): Promise<void>;
-};
 
 export type GithubOutboxInstallationClientFactory = {
   getInstallationOctokit(installationId: number): Promise<GithubOutboxOctokit>;
@@ -81,16 +77,6 @@ export type GithubOutboxJobInput =
       payload: GithubSendNotificationsPayload;
       type: typeof githubOutboxJobTypes.sendNotifications;
     };
-
-export async function enqueueGithubOutboxJob(
-  store: GithubOutboxStore,
-  job: GithubOutboxJobInput,
-): Promise<void> {
-  await store.enqueueOutboxJob({
-    payload: job.payload,
-    type: job.type,
-  });
-}
 
 export async function executeGithubOutboxJob(
   job: OutboxJobRecord,

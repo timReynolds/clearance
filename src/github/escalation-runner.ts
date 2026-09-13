@@ -1,6 +1,9 @@
 import { buildEscalationRequirementsFromState, processEscalationRun } from "../workflow/index.js";
 import type { ClearanceState } from "../state/index.js";
-import { enqueueGithubOutboxJob, githubOutboxJobTypes, type GithubOutboxStore } from "./outbox.js";
+import {
+  commitGithubReviewTransition,
+  type GithubReviewTransitionStore,
+} from "./review-transition.js";
 import {
   listOpenPullRequests,
   type OpenPullRequest,
@@ -14,25 +17,12 @@ export type EscalationRunnerRepository = {
 
 export type GithubEscalationRunnerOctokit = OpenPullRequestsOctokit;
 
-export type GithubEscalationRunnerStateStore = {
-  enqueueOutboxJob: GithubOutboxStore["enqueueOutboxJob"];
+export type GithubEscalationRunnerStateStore = GithubReviewTransitionStore & {
   loadPullRequestState(input: {
     owner: string;
     pullNumber: number;
     repo: string;
   }): Promise<ClearanceState | undefined>;
-  savePullRequestState(
-    input: {
-      author: string;
-      headSha: string;
-      labels: string[];
-      now: string;
-      owner: string;
-      pullNumber: number;
-      repo: string;
-    },
-    state: ClearanceState,
-  ): Promise<void>;
 };
 
 export type GithubEscalationRunnerOptions = {
@@ -44,7 +34,6 @@ export type EscalationPullResult =
   | {
       actions: number;
       pullNumber: number;
-      sideEffectFailures: number;
       status: "processed";
     }
   | {
@@ -101,32 +90,9 @@ async function processPullRequest(
       state: storedState,
     },
     {
-      postComment: async (body) => {
-        await enqueueGithubOutboxJob(options.stateStore, {
-          payload: {
-            body,
-            installationId: options.installationId,
-            owner: repository.owner,
-            pullNumber: pullRequest.number,
-            repo: repository.repo,
-          },
-          type: githubOutboxJobTypes.postComment,
-        });
-      },
-      requestReviewers: async (reviewers) => {
-        await enqueueGithubOutboxJob(options.stateStore, {
-          payload: {
-            installationId: options.installationId,
-            owner: repository.owner,
-            pullNumber: pullRequest.number,
-            repo: repository.repo,
-            reviewers,
-          },
-          type: githubOutboxJobTypes.requestReviewers,
-        });
-      },
-      saveState: async (nextState) => {
-        await options.stateStore.savePullRequestState(
+      commitTransition: (transition) =>
+        commitGithubReviewTransition(
+          options.stateStore,
           {
             author: pullRequest.author,
             headSha: pullRequest.headSha,
@@ -136,28 +102,15 @@ async function processPullRequest(
             pullNumber: pullRequest.number,
             repo: repository.repo,
           },
-          nextState,
-        );
-      },
-      upsertComment: async (body) => {
-        await enqueueGithubOutboxJob(options.stateStore, {
-          payload: {
-            body,
-            installationId: options.installationId,
-            owner: repository.owner,
-            pullNumber: pullRequest.number,
-            repo: repository.repo,
-          },
-          type: githubOutboxJobTypes.upsertComment,
-        });
-      },
+          options.installationId,
+          transition,
+        ),
     },
   );
 
   return {
     actions: result.actions.length,
     pullNumber: pullRequest.number,
-    sideEffectFailures: result.sideEffectFailures.length,
     status: "processed",
   };
 }

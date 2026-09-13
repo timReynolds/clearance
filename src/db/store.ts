@@ -1,6 +1,7 @@
 import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
 
-import type { ClearanceDatabase } from "./client.js";
+import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
+import type * as schema from "./schema.js";
 import {
   approvals,
   assignments,
@@ -58,7 +59,7 @@ export type OutboxJobFailureInput = {
 };
 
 export class DrizzleClearanceStore {
-  constructor(private readonly db: ClearanceDatabase) {}
+  constructor(private readonly db: PgDatabase<PgQueryResultHKT, typeof schema>) {}
 
   async listTrackedRepositories(): Promise<TrackedRepository[]> {
     return this.db
@@ -88,7 +89,11 @@ export class DrizzleClearanceStore {
     return rows[0]?.state;
   }
 
-  async savePullRequestState(input: PullRequestStateRef, state: ClearanceState): Promise<void> {
+  async savePullRequestTransition(
+    input: PullRequestStateRef,
+    state: ClearanceState,
+    jobs: OutboxJobInput[],
+  ): Promise<void> {
     await this.db.transaction(async (tx) => {
       const rows = await tx
         .insert(pullRequests)
@@ -208,6 +213,10 @@ export class DrizzleClearanceStore {
           })),
         );
       }
+
+      if (jobs.length > 0) {
+        await tx.insert(outboxJobs).values(jobs);
+      }
     });
   }
 
@@ -276,14 +285,6 @@ export class DrizzleClearanceStore {
       .where(eq(webhookDeliveries.deliveryId, input.deliveryId));
 
     return true;
-  }
-
-  async enqueueOutboxJob(input: OutboxJobInput): Promise<void> {
-    await this.db.insert(outboxJobs).values({
-      availableAt: input.availableAt,
-      payload: input.payload,
-      type: input.type,
-    });
   }
 
   async claimOutboxJobs(limit: number): Promise<OutboxJobRecord[]> {

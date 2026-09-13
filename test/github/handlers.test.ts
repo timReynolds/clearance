@@ -12,6 +12,7 @@ import {
 } from "../../src/github/handlers.js";
 import { appendReviewThreadMarker } from "../../src/github/index.js";
 import { parseClearanceState, type ClearanceState } from "../../src/state/index.js";
+import { createTransactionalStore } from "../helpers/transactional-store.js";
 
 type GetBlob = GithubWorkflowOctokit["rest"]["git"]["getBlob"];
 type GetTree = GithubWorkflowOctokit["rest"]["git"]["getTree"];
@@ -69,7 +70,7 @@ describe("registerGithubHandlers", () => {
     });
     expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
     expect(octokit.rest.repos.createCommitStatus).not.toHaveBeenCalled();
-    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+    expect(stateStore.jobs).toContainEqual(
       expect.objectContaining({
         payload: expect.objectContaining({
           body: expect.stringContaining("<!-- clearance-state:v1"),
@@ -79,7 +80,7 @@ describe("registerGithubHandlers", () => {
         type: "github.upsert-comment",
       }),
     );
-    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+    expect(stateStore.jobs).toContainEqual(
       expect.objectContaining({
         payload: expect.objectContaining({
           reviewers: ["alice"],
@@ -87,7 +88,7 @@ describe("registerGithubHandlers", () => {
         type: "github.request-reviewers",
       }),
     );
-    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+    expect(stateStore.jobs).toContainEqual(
       expect.objectContaining({
         payload: expect.objectContaining({
           decisions: expect.arrayContaining([
@@ -101,6 +102,62 @@ describe("registerGithubHandlers", () => {
       }),
     );
   });
+
+  it.each(["pull_request", "pull_request_review"] as const)(
+    "retries a failed %s delivery after its durable transition rolls back",
+    async (name) => {
+      vi.spyOn(console, "info").mockImplementation(() => {});
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const { database, store } = await createTransactionalStore();
+      const recordDelivery = vi.spyOn(store, "recordWebhookDelivery");
+      const octokit = createWorkflowOctokit();
+      const webhooks = new Webhooks({ secret: "test-secret" });
+      registerGithubHandlers(
+        webhooks,
+        { getInstallationOctokit: async () => octokit },
+        createHandlerOptions(store),
+      );
+      const payload = JSON.stringify(
+        name === "pull_request"
+          ? createPullRequestPayload("opened")
+          : createPullRequestReviewPayload("submitted"),
+      );
+      const event = {
+        id: "retry-delivery",
+        name,
+        payload,
+        signature: await webhooks.sign(payload),
+      };
+      const ref = { owner: "acme", repo: "clearance", pullNumber: 42 };
+      await database.exec(
+        "alter table clearance.outbox_jobs add constraint fail_status check (type <> 'github.set-statuses')",
+      );
+
+      await expect(webhooks.verifyAndReceive(event)).rejects.toThrow(/outbox_jobs/);
+      expect(recordDelivery).toHaveBeenLastCalledWith(
+        expect.objectContaining({ deliveryId: "retry-delivery", status: "failed" }),
+      );
+      expect(await store.loadPullRequestState(ref)).toBeUndefined();
+      expect(await store.claimOutboxJobs(10)).toEqual([]);
+
+      await database.exec("alter table clearance.outbox_jobs drop constraint fail_status");
+      await webhooks.verifyAndReceive(event);
+      expect(recordDelivery).toHaveBeenLastCalledWith(
+        expect.objectContaining({ deliveryId: "retry-delivery", status: "processed" }),
+      );
+      expect(await store.loadPullRequestState(ref)).toBeDefined();
+      expect((await store.claimOutboxJobs(10)).map(({ type }) => type).toSorted()).toEqual(
+        name === "pull_request"
+          ? ["github.request-reviewers", "github.set-statuses", "github.upsert-comment"]
+          : ["github.set-statuses", "github.upsert-comment"],
+      );
+      await webhooks.verifyAndReceive(event);
+      expect(await store.claimOutboxJobs(10)).toEqual([]);
+      expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
+      expect(octokit.rest.repos.createCommitStatus).not.toHaveBeenCalled();
+    },
+    20000,
+  );
 
   it("uses dry-run mode to update only the sticky comment", async () => {
     vi.spyOn(console, "info").mockImplementation(() => {});
@@ -125,8 +182,8 @@ describe("registerGithubHandlers", () => {
     } as unknown as EmitterWebhookEvent);
 
     expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
-    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledTimes(1);
-    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+    expect(stateStore.jobs).toHaveLength(1);
+    expect(stateStore.jobs).toContainEqual(
       expect.objectContaining({
         payload: expect.objectContaining({
           body: expect.stringContaining("Dry run mode is active."),
@@ -196,7 +253,7 @@ describe("registerGithubHandlers", () => {
       tree_sha: "head-sha",
     });
     expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
-    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+    expect(stateStore.jobs).toContainEqual(
       expect.objectContaining({
         payload: expect.objectContaining({
           body: expect.stringContaining("<!-- clearance-state:v1"),
@@ -307,7 +364,7 @@ describe("registerGithubHandlers", () => {
       repo: "clearance",
     });
     expect(octokit.rest.repos.createCommitStatus).not.toHaveBeenCalled();
-    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+    expect(stateStore.jobs).toContainEqual(
       expect.objectContaining({
         payload: expect.objectContaining({
           decisions: expect.arrayContaining([
@@ -339,7 +396,7 @@ describe("registerGithubHandlers", () => {
     const latestUpsertBody = stateStore.jobs.findLast((job) => job.type === "github.upsert-comment")
       ?.payload.body;
     expect(parseClearanceState(String(latestUpsertBody)).state.override).toBeUndefined();
-    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+    expect(stateStore.jobs).toContainEqual(
       expect.objectContaining({
         payload: expect.objectContaining({
           decisions: expect.arrayContaining([
@@ -431,8 +488,8 @@ describe("registerGithubHandlers", () => {
 
     expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
     expect(octokit.rest.repos.createCommitStatus).not.toHaveBeenCalled();
-    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledTimes(3);
-    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+    expect(stateStore.jobs).toHaveLength(3);
+    expect(stateStore.jobs).toContainEqual(
       expect.objectContaining({
         payload: expect.objectContaining({
           body: expect.stringContaining("<!-- clearance-state:v1"),
@@ -442,7 +499,7 @@ describe("registerGithubHandlers", () => {
         type: "github.upsert-comment",
       }),
     );
-    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+    expect(stateStore.jobs).toContainEqual(
       expect.objectContaining({
         payload: expect.objectContaining({
           reviewers: ["alice"],
@@ -450,7 +507,7 @@ describe("registerGithubHandlers", () => {
         type: "github.request-reviewers",
       }),
     );
-    expect(stateStore.enqueueOutboxJob).toHaveBeenCalledWith(
+    expect(stateStore.jobs).toContainEqual(
       expect.objectContaining({
         payload: expect.objectContaining({
           decisions: expect.arrayContaining([
@@ -619,7 +676,7 @@ describe("registerGithubHandlers", () => {
 });
 
 type TestStateStore = GithubHandlerStateStore & {
-  jobs: Array<Parameters<GithubHandlerStateStore["enqueueOutboxJob"]>[0]>;
+  jobs: Parameters<GithubHandlerStateStore["savePullRequestTransition"]>[2];
   savedState?: ClearanceState;
 };
 
@@ -635,16 +692,14 @@ function createStateStore(
     beginWebhookDelivery: vi.fn<GithubHandlerStateStore["beginWebhookDelivery"]>(
       options.beginWebhookDelivery ?? (async () => true),
     ),
-    enqueueOutboxJob: vi.fn<GithubHandlerStateStore["enqueueOutboxJob"]>(async (job) => {
-      jobs.push(job);
-    }),
     jobs,
     loadPullRequestState: vi.fn<GithubHandlerStateStore["loadPullRequestState"]>(
       async () => savedState,
     ),
     recordWebhookDelivery: vi.fn<GithubHandlerStateStore["recordWebhookDelivery"]>(async () => {}),
-    savePullRequestState: vi.fn<GithubHandlerStateStore["savePullRequestState"]>(
-      async (_input, state) => {
+    savePullRequestTransition: vi.fn<GithubHandlerStateStore["savePullRequestTransition"]>(
+      async (_input, state, acceptedJobs) => {
+        jobs.push(...acceptedJobs);
         savedState = state;
         store.savedState = state;
       },

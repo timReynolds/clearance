@@ -13,6 +13,7 @@ import {
   processSubmittedReview,
   type PullRequestWorkflowDependencies,
   type PullRequestWorkflowInput,
+  type ReviewTransitionEffect,
 } from "../../src/workflow/index.js";
 
 describe("pull request workflow", () => {
@@ -60,12 +61,15 @@ require = [{ from = "@org/platform", count = 1 }]
         reviewers: ["alice"],
       },
     ]);
-    expect(dependencies.upsertComment).toHaveBeenCalledWith(
-      expect.objectContaining({ pullNumber: 42 }),
-      expect.stringContaining("<!-- clearance-state:v1"),
-    );
-    expect(dependencies.setStatuses).toHaveBeenCalledWith(input(), result.checks);
-    expect(dependencies.requestReviewers).toHaveBeenCalledWith(input(), ["alice"]);
+    expect(dependencies.effects).toContainEqual({
+      type: "upsert-comment",
+      body: expect.stringContaining("<!-- clearance-state:v1"),
+    });
+    expect(dependencies.effects).toContainEqual({ type: "set-statuses", decisions: result.checks });
+    expect(dependencies.effects).toContainEqual({
+      type: "request-reviewers",
+      reviewers: ["alice"],
+    });
   });
 
   it("renders the comment only in dry-run mode", async () => {
@@ -96,13 +100,13 @@ users = ["@alice"]
     expect(result.state.assignments).toEqual([]);
     expect(result.state.requirements[0]?.assignedReviewers).toEqual(["alice"]);
     expect(result.state.notificationsSent).toEqual([]);
-    expect(dependencies.upsertComment).toHaveBeenCalledWith(
-      input(),
-      expect.stringContaining("Dry run mode is active."),
-    );
-    expect(dependencies.setStatuses).not.toHaveBeenCalled();
-    expect(dependencies.requestReviewers).not.toHaveBeenCalled();
-    expect(dependencies.sendNotifications).not.toHaveBeenCalled();
+    expect(dependencies.effects).toContainEqual({
+      type: "upsert-comment",
+      body: expect.stringContaining("Dry run mode is active."),
+    });
+    expect(dependencies.effects.some((effect) => effect.type === "set-statuses")).toBe(false);
+    expect(dependencies.effects.some((effect) => effect.type === "request-reviewers")).toBe(false);
+    expect(dependencies.effects.some((effect) => effect.type === "send-notifications")).toBe(false);
 
     const enforcingDependencies = createDependencies({
       changedFiles: ["src/index.ts"],
@@ -118,7 +122,10 @@ require = [{ from = "@org/platform", count = 1 }]
     const enforcingResult = await processPullRequestChange(input(), enforcingDependencies);
 
     expect(enforcingResult.requestedReviewers).toEqual(["alice"]);
-    expect(enforcingDependencies.requestReviewers).toHaveBeenCalledWith(input(), ["alice"]);
+    expect(enforcingDependencies.effects).toContainEqual({
+      type: "request-reviewers",
+      reviewers: ["alice"],
+    });
   });
 
   it("uses reviewer signals before assigning reviewers", async () => {
@@ -193,7 +200,7 @@ require = [{ from = "@org/platform", count = 1 }]
         reviewers: ["alice"],
       },
     ]);
-    expect(dependencies.requestReviewers).toHaveBeenCalledWith(input(), []);
+    expect(dependencies.effects.some((effect) => effect.type === "request-reviewers")).toBe(false);
   });
 
   it("loads previous state from persistence", async () => {
@@ -222,7 +229,7 @@ require = [{ from = "@org/platform", count = 1 }]
     expect(dependencies.loadState).toHaveBeenCalledWith(input());
     expect(result.requestedReviewers).toEqual([]);
     expect(result.state.assignments[0]?.assignedAt).toBe("2026-05-17T10:00:00.000Z");
-    expect(dependencies.saveState).toHaveBeenCalledWith(input(), result.state);
+    expect(dependencies.savedState).toEqual(result.state);
   });
 
   it("sends new notifications once and records them in sticky state", async () => {
@@ -240,13 +247,16 @@ users = ["@alice"]
     const result = await processPullRequestChange(input(), dependencies);
 
     expect(result.state.notificationsSent).toEqual(["notify:.:teams=@org/docs:users=@alice"]);
-    expect(dependencies.sendNotifications).toHaveBeenCalledWith(input(), [
-      expect.objectContaining({
-        identity: "notify:.:teams=@org/docs:users=@alice",
-        teams: ["@org/docs"],
-        users: ["@alice"],
-      }),
-    ]);
+    expect(dependencies.effects).toContainEqual({
+      type: "send-notifications",
+      notifications: [
+        expect.objectContaining({
+          identity: "notify:.:teams=@org/docs:users=@alice",
+          teams: ["@org/docs"],
+          users: ["@alice"],
+        }),
+      ],
+    });
 
     const repeatedDependencies = createDependencies({
       changedFiles: ["docs/readme.md"],
@@ -265,7 +275,9 @@ users = ["@alice"]
     expect(repeatedResult.state.notificationsSent).toEqual([
       "notify:.:teams=@org/docs:users=@alice",
     ]);
-    expect(repeatedDependencies.sendNotifications).toHaveBeenCalledWith(input(), []);
+    expect(
+      repeatedDependencies.effects.some((effect) => effect.type === "send-notifications"),
+    ).toBe(false);
   });
 
   it("stores escalation policy metadata on review requirements", async () => {
@@ -337,7 +349,9 @@ require = [{ from = "@org/platform", count = 1 }]
       description: "All review requirements are satisfied",
       state: "success",
     });
-    expect(reviewDependencies.requestReviewers).not.toHaveBeenCalled();
+    expect(reviewDependencies.effects.some((effect) => effect.type === "request-reviewers")).toBe(
+      false,
+    );
   });
 
   it("revokes submitted approvals when a reviewer requests changes", async () => {
@@ -399,12 +413,12 @@ require = [{ from = "@org/platform", count = 1 }]
     );
 
     expect(result.checks[1]?.state).toBe("success");
-    expect(dependencies.upsertComment).toHaveBeenCalledWith(
-      expect.objectContaining({ pullNumber: 42 }),
-      expect.stringContaining("Dry run mode is active."),
-    );
-    expect(dependencies.setStatuses).not.toHaveBeenCalled();
-    expect(dependencies.requestReviewers).not.toHaveBeenCalled();
+    expect(dependencies.effects).toContainEqual({
+      type: "upsert-comment",
+      body: expect.stringContaining("Dry run mode is active."),
+    });
+    expect(dependencies.effects.some((effect) => effect.type === "set-statuses")).toBe(false);
+    expect(dependencies.effects.some((effect) => effect.type === "request-reviewers")).toBe(false);
 
     const enforcingDependencies = createDependencies({
       changedFiles: ["src/index.ts"],
@@ -420,7 +434,9 @@ require = [{ from = "@org/platform", count = 1 }]
     const enforcingResult = await processPullRequestChange(input(), enforcingDependencies);
 
     expect(enforcingResult.requestedReviewers).toEqual([]);
-    expect(enforcingDependencies.requestReviewers).toHaveBeenCalledWith(input(), []);
+    expect(
+      enforcingDependencies.effects.some((effect) => effect.type === "request-reviewers"),
+    ).toBe(false);
   });
 
   it("sets failing checks and skips reviewer requests for invalid config", async () => {
@@ -553,68 +569,33 @@ teams = ["@org/admins"]
     });
   });
 
-  it("returns side effect failures instead of throwing", async () => {
-    const dependencies = createDependencies({
-      changedFiles: ["src/index.ts"],
-      identityResolution: identityResolution(),
-      ownershipTree: ownershipTree(`
+  it.each(["pull request", "submitted review"])(
+    "rejects a %s when durable acceptance fails",
+    async (event) => {
+      const dependencies = createDependencies({
+        changedFiles: ["src/index.ts"],
+        identityResolution: identityResolution(),
+        ownershipTree: ownershipTree(`
 [[rule]]
 paths = ["src/**"]
 require = [{ from = "@org/platform", count = 1 }]
 `),
-    });
-    dependencies.requestReviewers = vi.fn<PullRequestWorkflowDependencies["requestReviewers"]>(
-      async () => {
-        throw new Error("reviewer API unavailable");
-      },
-    );
-
-    const result = await processPullRequestChange(input(), dependencies);
-
-    expect(result.sideEffectFailures).toEqual([
-      {
-        message: "reviewer API unavailable",
-        operation: "request-reviewers",
-      },
-    ]);
-    expect(result.requestedReviewers).toEqual(["alice"]);
-    expect(dependencies.upsertComment).toHaveBeenCalled();
-    expect(dependencies.setStatuses).toHaveBeenCalled();
-  });
-
-  it("returns submitted-review side effect failures instead of throwing", async () => {
-    const dependencies = createDependencies({
-      changedFiles: ["src/index.ts"],
-      existingComment: approvedComment("head-sha"),
-      identityResolution: identityResolution(),
-      ownershipTree: ownershipTree(`
-[[rule]]
-paths = ["src/**"]
-require = [{ from = "@org/platform", count = 1 }]
-`),
-    });
-    dependencies.setStatuses = vi.fn<PullRequestWorkflowDependencies["setStatuses"]>(async () => {
-      throw new Error("status API unavailable");
-    });
-
-    const result = await processSubmittedReview(
-      {
-        ...input(),
-        reviewState: "approved",
-        reviewer: "alice",
-      },
-      dependencies,
-    );
-
-    expect(result.sideEffectFailures).toEqual([
-      {
-        message: "status API unavailable",
-        operation: "set-statuses",
-      },
-    ]);
-    expect(dependencies.upsertComment).toHaveBeenCalled();
-    expect(dependencies.requestReviewers).not.toHaveBeenCalled();
-  });
+      });
+      dependencies.commitTransition = vi.fn<PullRequestWorkflowDependencies["commitTransition"]>(
+        async () => {
+          throw new Error("database unavailable");
+        },
+      );
+      const result =
+        event === "pull request"
+          ? processPullRequestChange(input(), dependencies)
+          : processSubmittedReview(
+              { ...input(), reviewState: "approved", reviewer: "alice" },
+              dependencies,
+            );
+      await expect(result).rejects.toThrow("database unavailable");
+    },
+  );
 
   it("fails review checks when an OR requirement has no eligible reviewers", async () => {
     const dependencies = createDependencies({
@@ -698,7 +679,10 @@ require_any = [
       },
     ]);
     await processPullRequestChange(input(), dependencies);
-    expect(dependencies.requestReviewers).toHaveBeenCalledWith(input(), ["security-reviewer"]);
+    expect(dependencies.effects).toContainEqual({
+      type: "request-reviewers",
+      reviewers: ["security-reviewer"],
+    });
 
     const reviewDependencies = createDependencies({
       changedFiles: ["src/index.ts"],
@@ -861,7 +845,11 @@ function createDependencies(options: {
   existingState?: ClearanceState;
   identityResolution: GithubIdentityResolution;
   ownershipTree: OwnershipTree;
-}): PullRequestWorkflowDependencies & { savedState?: ClearanceState; upsertedBody?: string } {
+}): PullRequestWorkflowDependencies & {
+  savedState?: ClearanceState;
+  upsertedBody?: string;
+  effects: ReviewTransitionEffect[];
+} {
   let storedState =
     options.existingState ??
     (options.existingComment === undefined
@@ -870,6 +858,7 @@ function createDependencies(options: {
   const dependencies: PullRequestWorkflowDependencies & {
     savedState?: ClearanceState;
     upsertedBody?: string;
+    effects: ReviewTransitionEffect[];
   } = {
     listChangedFiles: vi.fn<PullRequestWorkflowDependencies["listChangedFiles"]>(
       async () => options.changedFiles,
@@ -881,19 +870,20 @@ function createDependencies(options: {
     loadOwnershipTree: vi.fn<PullRequestWorkflowDependencies["loadOwnershipTree"]>(
       async () => options.ownershipTree,
     ),
-    requestReviewers: vi.fn<PullRequestWorkflowDependencies["requestReviewers"]>(async () => {}),
     resolveIdentities: vi.fn<PullRequestWorkflowDependencies["resolveIdentities"]>(
       async () => options.identityResolution,
     ),
-    saveState: vi.fn<PullRequestWorkflowDependencies["saveState"]>(async (_input, state) => {
-      storedState = state;
-      dependencies.savedState = state;
-    }),
-    sendNotifications: vi.fn<PullRequestWorkflowDependencies["sendNotifications"]>(async () => {}),
-    setStatuses: vi.fn<PullRequestWorkflowDependencies["setStatuses"]>(async () => {}),
-    upsertComment: vi.fn<PullRequestWorkflowDependencies["upsertComment"]>(async (_input, body) => {
-      dependencies.upsertedBody = body;
-    }),
+    effects: [],
+    commitTransition: vi.fn<PullRequestWorkflowDependencies["commitTransition"]>(
+      async (_input, transition) => {
+        storedState = transition.state;
+        dependencies.savedState = transition.state;
+        dependencies.effects = transition.effects;
+        dependencies.upsertedBody = transition.effects.find(
+          (effect) => effect.type === "upsert-comment",
+        )?.body;
+      },
+    ),
   };
 
   return dependencies;

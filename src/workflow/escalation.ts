@@ -9,6 +9,7 @@ import {
   type ClearanceStateRequirement,
   type StateEvent,
 } from "../state/index.js";
+import type { ReviewTransition, ReviewTransitionEffect } from "./transition.js";
 
 export type EscalationWorkflowInput = {
   now: string;
@@ -17,20 +18,11 @@ export type EscalationWorkflowInput = {
 };
 
 export type EscalationWorkflowDependencies = {
-  postComment(body: string): Promise<void>;
-  requestReviewers(reviewers: string[]): Promise<void>;
-  saveState(state: ClearanceState): Promise<void>;
-  upsertComment(body: string): Promise<void>;
-};
-
-export type EscalationSideEffectFailure = {
-  message: string;
-  operation: "post-comment" | "request-reviewers" | "upsert-comment";
+  commitTransition(transition: ReviewTransition): Promise<void>;
 };
 
 export type EscalationWorkflowResult = {
   actions: EscalationAction[];
-  sideEffectFailures: EscalationSideEffectFailure[];
   state: ClearanceState;
 };
 
@@ -49,25 +41,19 @@ export async function processEscalationRun(
       });
   const nextState = applyEscalationActions(state, actions, input.now);
 
-  await dependencies.saveState(nextState);
-
-  const sideEffectFailures = await runEscalationSideEffects([
-    {
-      execute: () => dependencies.upsertComment(renderClearanceComment(nextState)),
-      operation: "upsert-comment",
-    },
-    ...actions.map((action) => ({
-      execute: () => applyEscalationSideEffect(action, dependencies),
-      operation:
+  const effects: ReviewTransitionEffect[] = [
+    { type: "upsert-comment", body: renderClearanceComment(nextState) },
+    ...actions.map(
+      (action): ReviewTransitionEffect =>
         action.type === "request_reviewer"
-          ? ("request-reviewers" as const)
-          : ("post-comment" as const),
-    })),
-  ]);
+          ? { type: "request-reviewers", reviewers: [action.reviewer] }
+          : { type: "post-comment", body: renderActionComment(action) },
+    ),
+  ];
+  await dependencies.commitTransition({ state: nextState, effects });
 
   return {
     actions,
-    sideEffectFailures,
     state: nextState,
   };
 }
@@ -125,41 +111,6 @@ function applyEscalationActions(
   };
 }
 
-async function applyEscalationSideEffect(
-  action: EscalationAction,
-  dependencies: EscalationWorkflowDependencies,
-): Promise<void> {
-  if (action.type === "request_reviewer") {
-    await dependencies.requestReviewers([action.reviewer]);
-    return;
-  }
-
-  await dependencies.postComment(renderActionComment(action));
-}
-
-async function runEscalationSideEffects(
-  effects: Array<{
-    execute(): Promise<void>;
-    operation: EscalationSideEffectFailure["operation"];
-  }>,
-): Promise<EscalationSideEffectFailure[]> {
-  const results = await Promise.all(
-    effects.map(async (effect): Promise<EscalationSideEffectFailure | undefined> => {
-      try {
-        await effect.execute();
-        return undefined;
-      } catch (error) {
-        return {
-          message: getErrorMessage(error, "unknown error"),
-          operation: effect.operation,
-        };
-      }
-    }),
-  );
-
-  return results.filter((failure): failure is EscalationSideEffectFailure => failure !== undefined);
-}
-
 function getAssignedReviewers(
   state: ClearanceState,
   requirement: ClearanceStateRequirement,
@@ -179,10 +130,6 @@ function getAssignmentTime(
   return state.assignments.find(
     (assignment) => assignment.requirementIdentity === requirement.identity,
   )?.assignedAt;
-}
-
-function getErrorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback;
 }
 
 function createStateEvent(action: EscalationAction, now: string): StateEvent {

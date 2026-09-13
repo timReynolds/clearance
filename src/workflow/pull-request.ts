@@ -29,6 +29,7 @@ import {
   type ReviewRequirementDefinition,
 } from "../state/index.js";
 import type { GithubIdentityResolution } from "../github/index.js";
+import type { ReviewTransition, ReviewTransitionEffect } from "./transition.js";
 
 export type PullRequestWorkflowInput = {
   author: string;
@@ -57,34 +58,17 @@ export type PullRequestWorkflowDependencies = {
   ): Promise<ReviewerSignal[]>;
   loadState(input: PullRequestWorkflowInput): Promise<ClearanceState | undefined>;
   loadOwnershipTree(input: PullRequestWorkflowInput): Promise<OwnershipTree>;
-  requestReviewers(input: PullRequestWorkflowInput, reviewers: string[]): Promise<void>;
   resolveIdentities(tree: OwnershipTree): Promise<GithubIdentityResolution>;
-  saveState(input: PullRequestWorkflowInput, state: ClearanceState): Promise<void>;
-  sendNotifications(
-    input: PullRequestWorkflowInput,
-    notifications: NotificationRecord[],
-  ): Promise<void>;
-  setStatuses(input: PullRequestWorkflowInput, decisions: CheckDecision[]): Promise<void>;
-  upsertComment(input: PullRequestWorkflowInput, body: string): Promise<void>;
+  /** Resolves only after state and every outgoing effect are durably accepted together. */
+  commitTransition(input: PullRequestWorkflowInput, transition: ReviewTransition): Promise<void>;
 };
 
 export type ReviewerSignal = Pick<ReviewerCandidate, "login"> &
   Partial<Omit<ReviewerCandidate, "id" | "login" | "unavailable">>;
 
-export type WorkflowSideEffectFailure = {
-  message: string;
-  operation: "request-reviewers" | "send-notifications" | "set-statuses" | "upsert-comment";
-};
-
-type WorkflowSideEffect = {
-  execute(): Promise<void>;
-  operation: WorkflowSideEffectFailure["operation"];
-};
-
 export type PullRequestWorkflowResult = {
   changedFiles: string[];
   checks: CheckDecision[];
-  sideEffectFailures: WorkflowSideEffectFailure[];
   requestedReviewers: string[];
   state: ClearanceState;
 };
@@ -163,28 +147,23 @@ export async function processPullRequestChange(
     ].toSorted(compareStrings),
   };
 
-  await dependencies.saveState(input, finalStateWithNotifications);
-
-  const sideEffectFailures = await runWorkflowSideEffects([
-    {
-      execute: () =>
-        dependencies.upsertComment(input, renderClearanceComment(finalStateWithNotifications)),
-      operation: "upsert-comment",
-    },
-    ...getEnforcementSideEffects(
-      input,
-      dependencies,
-      checks,
-      requestedReviewers,
-      pendingNotifications,
-      dryRun,
-    ),
-  ]);
+  const effects: ReviewTransitionEffect[] = [
+    { type: "upsert-comment", body: renderClearanceComment(finalStateWithNotifications) },
+  ];
+  if (!dryRun) {
+    effects.push({ type: "set-statuses", decisions: checks });
+    if (requestedReviewers.length > 0) {
+      effects.push({ type: "request-reviewers", reviewers: requestedReviewers });
+    }
+    if (pendingNotifications.length > 0) {
+      effects.push({ type: "send-notifications", notifications: pendingNotifications });
+    }
+  }
+  await dependencies.commitTransition(input, { state: finalStateWithNotifications, effects });
 
   return {
     changedFiles: context.changedFiles,
     checks,
-    sideEffectFailures,
     requestedReviewers,
     state: finalStateWithNotifications,
   };
@@ -211,20 +190,17 @@ export async function processSubmittedReview(
     reconciledState.override !== undefined,
   );
 
-  await dependencies.saveState(input, reconciledState);
-
-  const sideEffectFailures = await runWorkflowSideEffects([
-    {
-      execute: () => dependencies.upsertComment(input, renderClearanceComment(reconciledState)),
-      operation: "upsert-comment",
-    },
-    ...getSubmittedReviewEnforcementSideEffects(input, dependencies, checks, dryRun),
-  ]);
+  const effects: ReviewTransitionEffect[] = [
+    { type: "upsert-comment", body: renderClearanceComment(reconciledState) },
+  ];
+  if (!dryRun) {
+    effects.push({ type: "set-statuses", decisions: checks });
+  }
+  await dependencies.commitTransition(input, { state: reconciledState, effects });
 
   return {
     changedFiles: context.changedFiles,
     checks,
-    sideEffectFailures,
     requestedReviewers: [],
     state: reconciledState,
   };
@@ -241,52 +217,6 @@ function applyDryRunState(state: ClearanceState, dryRun: boolean): ClearanceStat
   const nextState = { ...state };
   delete nextState.dryRun;
   return nextState;
-}
-
-function getEnforcementSideEffects(
-  input: PullRequestWorkflowInput,
-  dependencies: PullRequestWorkflowDependencies,
-  checks: CheckDecision[],
-  requestedReviewers: string[],
-  pendingNotifications: NotificationRecord[],
-  dryRun: boolean,
-): WorkflowSideEffect[] {
-  if (dryRun) {
-    return [];
-  }
-
-  return [
-    {
-      execute: () => dependencies.setStatuses(input, checks),
-      operation: "set-statuses",
-    },
-    {
-      execute: () => dependencies.requestReviewers(input, requestedReviewers),
-      operation: "request-reviewers",
-    },
-    {
-      execute: () => dependencies.sendNotifications(input, pendingNotifications),
-      operation: "send-notifications",
-    },
-  ];
-}
-
-function getSubmittedReviewEnforcementSideEffects(
-  input: PullRequestWorkflowInput,
-  dependencies: PullRequestWorkflowDependencies,
-  checks: CheckDecision[],
-  dryRun: boolean,
-): WorkflowSideEffect[] {
-  if (dryRun) {
-    return [];
-  }
-
-  return [
-    {
-      execute: () => dependencies.setStatuses(input, checks),
-      operation: "set-statuses",
-    },
-  ];
 }
 
 async function loadPreviousState(
@@ -705,30 +635,6 @@ function createWorkflowChecks(
       requirements: state.requirements,
     }),
   ];
-}
-
-async function runWorkflowSideEffects(
-  effects: WorkflowSideEffect[],
-): Promise<WorkflowSideEffectFailure[]> {
-  const results = await Promise.all(
-    effects.map(async (effect): Promise<WorkflowSideEffectFailure | undefined> => {
-      try {
-        await effect.execute();
-        return undefined;
-      } catch (error) {
-        return {
-          message: getErrorMessage(error, "unknown error"),
-          operation: effect.operation,
-        };
-      }
-    }),
-  );
-
-  return results.filter((failure): failure is WorkflowSideEffectFailure => failure !== undefined);
-}
-
-function getErrorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback;
 }
 
 function compareStrings(left: string, right: string): number {

@@ -51,14 +51,12 @@ export {
   type ReviewerSignalsRef,
 } from "./reviewer-signals.js";
 export {
-  enqueueGithubOutboxJob,
   executeGithubOutboxJob,
   githubOutboxJobTypes,
   type GithubOutboxInstallationClientFactory,
   type GithubOutboxJobInput,
   type GithubOutboxJobType,
   type GithubOutboxOctokit,
-  type GithubOutboxStore,
 } from "./outbox.js";
 export {
   runGithubOutboxOnce,

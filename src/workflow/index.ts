@@ -9,8 +9,8 @@ export {
 export {
   buildEscalationRequirementsFromState,
   processEscalationRun,
-  type EscalationSideEffectFailure,
   type EscalationWorkflowDependencies,
   type EscalationWorkflowInput,
   type EscalationWorkflowResult,
 } from "./escalation.js";
+export type { ReviewTransition, ReviewTransitionEffect } from "./transition.js";
