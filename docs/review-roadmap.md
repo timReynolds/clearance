@@ -84,6 +84,10 @@ The current implementation adds:
 - Public PR preview for uninstalled public repositories via GitHub REST.
 - GitHub OAuth sign-in for user-scoped review actions.
 - GitHub-native comment, reply, approval, thread-resolution, and viewed-file helpers.
+- One review action module owns native writes and subsequent index updates. If GitHub accepts an
+  action but indexing fails, the response preserves native success and includes an index warning.
+  Missing native thread references prevent local-only replies or resolution; viewed-file mirroring
+  remains best effort after the patchset-aware mark is saved.
 - Hidden thread/comment markers on mirrored review comments.
 - Pull request webhook indexing for patchsets and per-file patch snapshots.
 - Recovery of Clearance-marked GitHub review comments from review-comment webhooks.

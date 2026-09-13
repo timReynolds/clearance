@@ -2,7 +2,6 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize, sep } from "node:path";
-import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { App } from "@octokit/app";
@@ -14,24 +13,12 @@ import dotenv from "dotenv";
 import { createDatabaseClient, DrizzleClearanceStore } from "./db/index.js";
 import { readEnv } from "./env.js";
 import { registerGithubHandlers, type GithubWorkflowOctokit } from "./github/handlers.js";
-import {
-  createGithubReviewThreadComment,
-  findGithubPullRequestNodeId,
-  findGithubReviewThreadNodeIdForComment,
-  markGithubFileViewed,
-  replyToGithubReviewThread,
-  resolveGithubReviewThread,
-  serializeReviewThreadMarker,
-  submitGithubPullRequestReview,
-  type GithubPullRequestReviewEvent,
-  type GithubReviewCommentMirror,
-} from "./github/index.js";
+import type { GithubPullRequestReviewEvent } from "./github/index.js";
 import { createInstallationOctokit } from "./github/installation-client.js";
 import {
   createRandomToken,
   DrizzleReviewAuthStore,
   DrizzleReviewStore,
-  getPublicThreadRootCommentId,
   loadReviewSnapshot,
   type AttentionPassRequest,
   type CreateThreadRequest,
@@ -39,6 +26,7 @@ import {
   type ReplyThreadRequest,
   type SubmitReviewRequest,
 } from "./review/index.js";
+import { createReviewActions, type ReviewActionResult } from "./review/actions.js";
 
 dotenv.config();
 
@@ -352,6 +340,13 @@ async function handleReviewApiRequest(
     return;
   }
 
+  const actions = createReviewActions({
+    actorLogin,
+    ref: route,
+    store: reviewStore,
+    github: actor.accessToken === undefined ? undefined : createUserOctokit(actor.accessToken),
+  });
+
   if (request.method === "POST" && route.action === "marks") {
     const body = await readJsonBody<MarkReviewedRequest>(request);
     if (
@@ -363,19 +358,7 @@ async function handleReviewApiRequest(
       return;
     }
 
-    const persisted = await reviewStore.markFileReviewed(route, actorLogin, body);
-    let githubMirrored = false;
-    if (actor.accessToken !== undefined) {
-      const octokit = createUserOctokit(actor.accessToken);
-      const pullRequestNodeId =
-        body.pullRequestNodeId ?? (await findGithubPullRequestNodeId(octokit, route));
-      if (pullRequestNodeId !== undefined) {
-        await markGithubFileViewed(octokit, pullRequestNodeId, body.filePath);
-        githubMirrored = true;
-      }
-    }
-
-    writeJson(response, 202, { ok: true, githubMirrored, persisted });
+    writeReviewActionResult(response, 202, await actions.markFileReviewed(body));
     return;
   }
 
@@ -386,14 +369,12 @@ async function handleReviewApiRequest(
       return;
     }
 
-    const persisted = await reviewStore.passAttention(route, actorLogin, body);
-    writeJson(response, 202, { ok: true, persisted });
+    writeReviewActionResult(response, 202, await actions.passAttention(body));
     return;
   }
 
   if (request.method === "POST" && route.action === "attention/not-my-turn") {
-    const persisted = await reviewStore.markNotMyTurn(route, actorLogin);
-    writeJson(response, 202, { ok: true, persisted });
+    writeReviewActionResult(response, 202, await actions.markNotMyTurn());
     return;
   }
 
@@ -414,32 +395,7 @@ async function handleReviewApiRequest(
       return;
     }
 
-    const threadId = randomUUID();
-    const commentId = randomUUID();
-    const marker = { commentId, threadId };
-    const github = await mirrorCreateThread(actor.accessToken, route, body, marker);
-    const persisted = await reviewStore.recordCreatedThread(route, actorLogin, body, {
-      commentId,
-      github,
-      marker: serializeReviewThreadMarker(marker),
-      threadId,
-      threadMarker: serializeReviewThreadMarker({ threadId }),
-    });
-
-    if (github === undefined && !persisted) {
-      writeJson(response, 401, {
-        error:
-          "Public pull request comments require GitHub sign-in or an indexed Clearance database.",
-      });
-      return;
-    }
-
-    writeJson(response, 201, {
-      githubMirrored: github !== undefined,
-      ok: true,
-      persisted,
-      threadId,
-    });
+    writeReviewActionResult(response, 201, await actions.createThread(body));
     return;
   }
 
@@ -454,27 +410,7 @@ async function handleReviewApiRequest(
       return;
     }
 
-    const commentId = randomUUID();
-    const marker = { commentId, threadId: route.threadId };
-    const github = await mirrorThreadReply(actor.accessToken, route, route.threadId, body, marker);
-    const persisted = await reviewStore.recordThreadReply(route, actorLogin, route.threadId, body, {
-      commentId,
-      github,
-      marker: serializeReviewThreadMarker(marker),
-    });
-
-    if (github === undefined && !persisted) {
-      writeJson(response, 401, {
-        error: "Public pull request replies require GitHub sign-in or an indexed Clearance thread.",
-      });
-      return;
-    }
-
-    writeJson(response, 201, {
-      githubMirrored: github !== undefined,
-      ok: true,
-      persisted,
-    });
+    writeReviewActionResult(response, 201, await actions.replyToThread(route.threadId, body));
     return;
   }
 
@@ -483,16 +419,7 @@ async function handleReviewApiRequest(
     route.threadId !== undefined &&
     route.action === "threads/resolve"
   ) {
-    const githubResolved = await mirrorThreadResolution(actor.accessToken, route, route.threadId);
-    const persisted = await reviewStore.resolveThread(route, actorLogin, route.threadId);
-    if (!githubResolved && !persisted) {
-      writeJson(response, 409, {
-        error: "Resolving imported public threads requires indexed GitHub review-thread state.",
-      });
-      return;
-    }
-
-    writeJson(response, 202, { githubResolved, ok: true, persisted });
+    writeReviewActionResult(response, 202, await actions.resolveThread(route.threadId));
     return;
   }
 
@@ -517,17 +444,20 @@ async function handleReviewApiRequest(
       return;
     }
 
-    await submitGithubPullRequestReview(createUserOctokit(actor.accessToken), route, {
-      body: body?.body ?? (event === "APPROVE" ? "Reviewed in Clearance." : undefined),
-      event,
-    });
-    await reviewStore.markNotMyTurn(route, actorLogin);
-
-    writeJson(response, 202, { githubMirrored: true, ok: true });
+    writeReviewActionResult(response, 202, await actions.submitReview({ body: body?.body, event }));
     return;
   }
 
   writeJson(response, 404, { error: "review action not found" });
+}
+
+function writeReviewActionResult(
+  response: ServerResponse,
+  successStatus: number,
+  result: ReviewActionResult,
+): void {
+  const status = result.ok ? successStatus : result.reason === "sign-in-required" ? 401 : 409;
+  writeJson(response, status, result);
 }
 
 /*
@@ -692,76 +622,6 @@ async function requireReviewCsrf(
     return false;
   }
 
-  return true;
-}
-
-async function mirrorCreateThread(
-  accessToken: string | undefined,
-  ref: ReviewPullRequestApiRoute,
-  body: CreateThreadRequest,
-  marker: { commentId: string; threadId: string },
-): Promise<GithubReviewCommentMirror | undefined> {
-  if (accessToken === undefined) {
-    return undefined;
-  }
-
-  return createGithubReviewThreadComment(createUserOctokit(accessToken), ref, body, marker);
-}
-
-async function mirrorThreadReply(
-  accessToken: string | undefined,
-  ref: ReviewPullRequestApiRoute,
-  threadId: string,
-  body: ReplyThreadRequest,
-  marker: { commentId: string; threadId: string },
-): Promise<GithubReviewCommentMirror | undefined> {
-  if (accessToken === undefined) {
-    return undefined;
-  }
-
-  const githubRef = await reviewStore.loadThreadGithubRef(ref, threadId);
-  const firstCommentId = githubRef?.firstCommentId ?? getPublicThreadRootCommentId(threadId);
-  if (firstCommentId === undefined) {
-    return undefined;
-  }
-
-  return replyToGithubReviewThread(
-    createUserOctokit(accessToken),
-    ref,
-    firstCommentId,
-    body.body,
-    marker,
-  );
-}
-
-async function mirrorThreadResolution(
-  accessToken: string | undefined,
-  ref: ReviewPullRequestApiRoute,
-  threadId: string,
-): Promise<boolean> {
-  if (accessToken === undefined) {
-    return false;
-  }
-
-  const githubRef = await reviewStore.loadThreadGithubRef(ref, threadId);
-  let threadNodeId = githubRef?.threadNodeId;
-  if (threadNodeId === undefined) {
-    const rootCommentId = getPublicThreadRootCommentId(threadId);
-    threadNodeId =
-      rootCommentId === undefined
-        ? undefined
-        : await findGithubReviewThreadNodeIdForComment(
-            createUserOctokit(accessToken),
-            ref,
-            rootCommentId,
-          );
-  }
-
-  if (threadNodeId === undefined) {
-    return false;
-  }
-
-  await resolveGithubReviewThread(createUserOctokit(accessToken), threadNodeId);
   return true;
 }
 

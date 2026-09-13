@@ -65,6 +65,9 @@ Covered areas:
 - submitted review flow
 - invalid config behavior
 - scoped stale approval retention and invalidation
+- review actions through `createReviewActions`, using mocked GitHub and review-index adapters:
+  native-write ordering, partial index failures, imported thread references, attention after review,
+  and best-effort viewed-file mirroring; a thin HTTP harness covers routing, validation, and CSRF.
 - escalation action application
 
 ### Webhook handler tests

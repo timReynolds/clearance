@@ -125,10 +125,15 @@ export async function createGithubReviewThreadComment(
     "POST /repos/{owner}/{repo}/pulls/{pull_number}/comments",
     parameters,
   );
-  const threadNodeId =
-    response.data.node_id === undefined
-      ? undefined
-      : await findGithubReviewThreadNodeId(octokit, ref, response.data.node_id);
+  let threadNodeId: string | undefined;
+  if (response.data.node_id !== undefined) {
+    try {
+      threadNodeId = await findGithubReviewThreadNodeId(octokit, ref, response.data.node_id);
+    } catch {
+      // The comment already exists. Resolution can recover this optional reference
+      // from its persisted comment id; failing here would invite a duplicate write.
+    }
+  }
 
   return {
     id: response.data.id,
