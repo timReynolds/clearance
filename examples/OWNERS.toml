@@ -1,0 +1,35 @@
+# Example Clearance configuration.
+
+inherit = true
+
+[escalation]
+warn_after = "4h"
+escalate_after = "8h"
+fallback_after = "24h"
+fallback_team = "@org/platform-leads"
+reset_on_push = true
+
+[[rule]]
+paths = ["**"]
+require = [
+  { from = "@org/platform-eng", count = 1 },
+]
+require_any = [
+  { from = "@org/security-eng", count = 1 },
+  { from = "@org/compliance", count = 1 },
+]
+
+[[rule]]
+paths = ["**/rbac/**", "**/network-policy/**"]
+require = [
+  { from = "@org/platform-eng", count = 1 },
+  { from = "@org/security-eng", count = 2 },
+]
+escalation = { warn_after = "2h", escalate_after = "4h" }
+
+[[notify]]
+paths = ["**"]
+teams = ["@org/compliance"]
+
+[override]
+teams = ["@org/repo-admins"]
